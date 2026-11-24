@@ -19,6 +19,9 @@
  *    Celigo's own authoring tooling — component class names, generator markers, a Python module
  *    path — along with issue-tracker keys. The sync now strips every Celigo vendor key the skills
  *    don't ship; this lint keeps the rest, and any leftover key, from shipping again.
+ *  - Nov 2026: the synced import schema named the bulk-load override placeholders
+ *    `{{tableName}}` and `{{preMergeTemporaryTable}}`. The template model only has the
+ *    `import.<adaptor>.bulkLoad.` paths, so override SQL written from that text loaded nothing.
  * This lint fails the sync before any such schema ships.
  *
  * Signatures detected (text-level, dependency-free):
@@ -38,6 +41,8 @@
  *     directory such as `helpers` or `utils`).
  *  6. An issue-tracker key (`ABC-12345`, five or six digits) that isn't quoted. Quoted example
  *     ids such as `"ORD-100245"` pass, and so do ISO standard numbers.
+ *  7. A bulk-load override placeholder without its path: `{{tableName}}` or
+ *     `{{preMergeTemporaryTable}}`, double or triple braces.
  *
  * Usage: node scripts/lint-schemas.mjs [files...]   (default: every yml under skills/)
  * Exits non-zero when any signature matches.
@@ -160,6 +165,10 @@ const SIGNATURES = [
 	{
 		name: "issue-tracker key outside quotes",
 		regex: /(?<!["'\w])(?!ISO-)[A-Z]{2,10}-\d{5,6}(?![\w"'-])/,
+	},
+	{
+		name: "bulk-load override placeholder without its import.<adaptor>.bulkLoad. path",
+		regex: /\{\{\{?\s*(?:tableName|preMergeTemporaryTable)\s*\}\}/,
 	},
 ];
 

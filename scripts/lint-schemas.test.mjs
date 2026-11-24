@@ -80,6 +80,20 @@ test("lintText flags issue-tracker keys in prose and comments, not quoted exampl
 	for (const text of examples) assert.deepEqual(lintText(`A:\n  ${text}\n`), [], text);
 });
 
+test("lintText flags bulk-load override placeholders without their path, not the full path", () => {
+	const name = "bulk-load override placeholder without its import.<adaptor>.bulkLoad. path";
+	for (const text of ["INSERT INTO {{tableName}} SELECT 1", "FROM {{{preMergeTemporaryTable}}} s", "USING {{ preMergeTemporaryTable }}"]) {
+		assert.deepEqual(lintText(`A:\n  description: ${text}\n`), [name], text);
+	}
+	for (const text of [
+		"MERGE INTO {{{import.rdbms.bulkLoad.tableName}}} USING {{{import.rdbms.bulkLoad.preMergeTemporaryTable}}}",
+		"INSERT INTO {{{import.jdbc.bulkLoad.tableName}}}",
+		"tableName: WAREHOUSE.PUBLIC.CUSTOMERS",
+	]) {
+		assert.deepEqual(lintText(`A:\n  description: ${text}\n`), [], text);
+	}
+});
+
 test("lintText flags the Mongoose type-wrapper leak", () => {
 	const text = "Mapping:\n  properties:\n    type:\n      type: array\n";
 	assert.deepEqual(lintText(text), ["mongoose type-wrapper (property named `type` holding an array)"]);
