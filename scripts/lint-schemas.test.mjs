@@ -95,7 +95,7 @@ test("lintText flags bulk-load override placeholders without their path, not the
 });
 
 test("lintText flags full-path bulk-load override placeholders in double braces, not triple", () => {
-	const name = "bulk-load override placeholder in double braces — renders the table name as a quoted string literal";
+	const name = "bulk-load override placeholder in double braces — only triple braces pass the table name through unescaped";
 	for (const text of [
 		"USING {{import.rdbms.bulkLoad.preMergeTemporaryTable}} AS s",
 		"INSERT INTO {{ import.jdbc.bulkLoad.tableName }} SELECT 1",

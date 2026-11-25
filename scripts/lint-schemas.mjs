@@ -44,8 +44,8 @@
  *     ids such as `"ORD-100245"` pass, and so do ISO standard numbers.
  *  7. A bulk-load override placeholder without its path: `{{tableName}}` or
  *     `{{preMergeTemporaryTable}}`, double or triple braces.
- *  8. A full-path bulk-load override placeholder in double braces. The SQL escaper quotes the
- *     table name (`'<staging table>'`), which the database rejects; only triple braces work.
+ *  8. A full-path bulk-load override placeholder in double braces. SQL engines quote the
+ *     table name (`'<staging table>'`), which the database rejects; JDBC HTML-escapes it.
  *
  * Usage: node scripts/lint-schemas.mjs [files...]   (default: every yml under skills/)
  * Exits non-zero when any signature matches.
@@ -174,7 +174,7 @@ const SIGNATURES = [
 		regex: /\{\{\{?\s*(?:tableName|preMergeTemporaryTable)\s*\}\}/,
 	},
 	{
-		name: "bulk-load override placeholder in double braces — renders the table name as a quoted string literal",
+		name: "bulk-load override placeholder in double braces — only triple braces pass the table name through unescaped",
 		regex: /(?<!\{)\{\{\s*import\.\w+\.bulkLoad\.(?:tableName|preMergeTemporaryTable)\s*\}\}(?!\})/,
 	},
 ];
