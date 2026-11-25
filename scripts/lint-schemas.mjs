@@ -21,7 +21,8 @@
  *    don't ship; this lint keeps the rest, and any leftover key, from shipping again.
  *  - Nov 2026: the synced import schema named the bulk-load override placeholders
  *    `{{tableName}}` and `{{preMergeTemporaryTable}}`. The template model only has the
- *    `import.<adaptor>.bulkLoad.` paths, so override SQL written from that text loaded nothing.
+ *    `import.<adaptor>.bulkLoad.` paths, so override SQL written from that text loaded nothing. The
+ *    same text showed the full path in double braces, which quotes the table name and fails too.
  * This lint fails the sync before any such schema ships.
  *
  * Signatures detected (text-level, dependency-free):
@@ -43,6 +44,8 @@
  *     ids such as `"ORD-100245"` pass, and so do ISO standard numbers.
  *  7. A bulk-load override placeholder without its path: `{{tableName}}` or
  *     `{{preMergeTemporaryTable}}`, double or triple braces.
+ *  8. A full-path bulk-load override placeholder in double braces. The SQL escaper quotes the
+ *     table name (`'<staging table>'`), which the database rejects; only triple braces work.
  *
  * Usage: node scripts/lint-schemas.mjs [files...]   (default: every yml under skills/)
  * Exits non-zero when any signature matches.
@@ -169,6 +172,10 @@ const SIGNATURES = [
 	{
 		name: "bulk-load override placeholder without its import.<adaptor>.bulkLoad. path",
 		regex: /\{\{\{?\s*(?:tableName|preMergeTemporaryTable)\s*\}\}/,
+	},
+	{
+		name: "bulk-load override placeholder in double braces — renders the table name as a quoted string literal",
+		regex: /(?<!\{)\{\{\s*import\.\w+\.bulkLoad\.(?:tableName|preMergeTemporaryTable)\s*\}\}(?!\})/,
 	},
 ];
 

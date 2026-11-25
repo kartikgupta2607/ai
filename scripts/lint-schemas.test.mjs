@@ -94,6 +94,22 @@ test("lintText flags bulk-load override placeholders without their path, not the
 	}
 });
 
+test("lintText flags full-path bulk-load override placeholders in double braces, not triple", () => {
+	const name = "bulk-load override placeholder in double braces — renders the table name as a quoted string literal";
+	for (const text of [
+		"USING {{import.rdbms.bulkLoad.preMergeTemporaryTable}} AS s",
+		"INSERT INTO {{ import.jdbc.bulkLoad.tableName }} SELECT 1",
+	]) {
+		assert.deepEqual(lintText(`A:\n  description: ${text}\n`), [name], text);
+	}
+	for (const text of [
+		"USING {{{import.rdbms.bulkLoad.preMergeTemporaryTable}}} AS s",
+		"INSERT INTO {{{import.jdbc.bulkLoad.tableName}}} SELECT 1",
+	]) {
+		assert.deepEqual(lintText(`A:\n  description: ${text}\n`), [], text);
+	}
+});
+
 test("lintText flags the Mongoose type-wrapper leak", () => {
 	const text = "Mapping:\n  properties:\n    type:\n      type: array\n";
 	assert.deepEqual(lintText(text), ["mongoose type-wrapper (property named `type` holding an array)"]);
