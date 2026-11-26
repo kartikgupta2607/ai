@@ -299,7 +299,7 @@ When the auto-generated MERGE isn't sufficient (conditional updates, ignore-exis
 The custom SQL goes in the `rdbms.query` field (yes, even with `bulkLoad`). Reference the staging table via `{{{import.rdbms.bulkLoad.preMergeTemporaryTable}}}` and the destination via `{{{import.rdbms.bulkLoad.tableName}}}` — triple braces and the full path. Bare `tableName` and `preMergeTemporaryTable` without the path are not defined and fail the load, and double braces quote the name as a string literal:
 
 ```sql
-MERGE INTO WAREHOUSE.PUBLIC.CUSTOMERS AS t
+MERGE INTO {{{import.rdbms.bulkLoad.tableName}}} AS t
 USING {{{import.rdbms.bulkLoad.preMergeTemporaryTable}}} AS s
 ON t.id = s.id
 WHEN MATCHED AND s.updated_at > t.updated_at THEN
@@ -505,7 +505,7 @@ FROM order_items GROUP BY customer_id
 5. **An unresolvable reference fails the step.** Query rendering is strict: a bare `{{name}}`, or `record.*` on a grouped record (which binds `rows`), fails with `cannot_evaluate_handlebars` rather than rendering empty. Always use `record.name`, or `rows.0.name` for grouped input.
 6. **Snowflake requires fully qualified table names.** `database.schema.table` unless the connection sets a default schema. Unqualified names fail silently or hit the wrong table.
 7. **`per_page` has a different Handlebars context.** The context is `batch_of_records`, not a single record. Use `{{#each batch_of_records}}...{{record.fieldName}}...{{/each}}`.
-8. **`bulkLoad.overrideMergeQuery` references a staging table.** Use `{{{import.rdbms.bulkLoad.preMergeTemporaryTable}}}` — not the target table name, not double braces, and not bare `preMergeTemporaryTable` without the path, which is not defined. On a JDBC import (NetSuite Analytics Warehouse) the path is `import.jdbc.bulkLoad.`.
+8. **`bulkLoad.overrideMergeQuery` uses both full-path placeholders.** Read from `{{{import.rdbms.bulkLoad.preMergeTemporaryTable}}}` (staging) and write to `{{{import.rdbms.bulkLoad.tableName}}}` (destination) — triple braces, not double braces, and not the bare names without the path, which are not defined. On a JDBC import (NetSuite Analytics Warehouse) the path is `import.jdbc.bulkLoad.`.
 9. **SQL Server MERGE requires a semicolon terminator.** Missing `;` at the end causes syntax errors.
 10. **`once.query` runs per record, not per batch.** The `{{record.id}}` in the once query refers to the current exported record. Don't write batch UPDATE statements here.
 11. **Don't put delta config inside `rdbms`.** There's no `rdbms.delta` property. Delta is handled by embedding `{{lastExportDateTime}}` directly in the SQL query text.
