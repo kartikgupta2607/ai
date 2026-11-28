@@ -150,9 +150,15 @@ Jdbc:
           type: boolean
           description: |-
             When true, the statement in `query` replaces the auto-generated MERGE / INSERT for the
-            bulk load, enabling ignore-existing logic or conditional updates. Saving it true with no
+            bulk load, enabling ignore-existing logic or conditional updates. The statement reads the
+            staging table as `{{{import.jdbc.bulkLoad.preMergeTemporaryTable}}}` and writes the
+            destination as `{{{import.jdbc.bulkLoad.tableName}}}`; the path is `jdbc`, not `rdbms`,
+            and a name outside it is not defined. Saving it true with no
             `query` entry fails with 422 `missing_required_field` ("jdbc bulk_load imports require a
             query."), on create and on update.
+          x-celigo-ai-guidance:
+            - |-
+              Write both table placeholders with triple braces and the `import.jdbc.bulkLoad.` path. Bare `tableName` and `preMergeTemporaryTable`, and the `import.rdbms.bulkLoad.` path used by rdbms imports, are not in the JDBC template model, so the load fails. Double braces HTML-escape the value, which breaks a quoted identifier such as `"SCHEMA"."TABLE"`.
         aggregation:
           type: object
           description: |-

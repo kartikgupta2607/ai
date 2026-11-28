@@ -242,7 +242,7 @@ Rdbms:
             → **USE `["bulk_load"]`** with:
               - `bulkLoad.tableName` (required — omitting it fails the save with 422 `missing_required_field` "rdbms imports require a tableName.")
               - `bulkLoad.primaryKeys` for upsert/merge (auto-generates MERGE)
-              - `bulkLoad.overrideMergeQuery: true` for custom SQL (ignore-existing, conditional updates, multi-table ops). The override SQL goes in `query` and references `{{preMergeTemporaryTable}}` (also written `{{import.rdbms.bulkLoad.preMergeTemporaryTable}}`) for the staging table and `{{tableName}}` for the destination.
+              - `bulkLoad.overrideMergeQuery: true` for custom SQL (ignore-existing, conditional updates, multi-table ops). The override SQL goes in `query` and references `{{{import.rdbms.bulkLoad.preMergeTemporaryTable}}}` for the staging table and `{{{import.rdbms.bulkLoad.tableName}}}` for the destination.
               - No `primaryKeys` for pure INSERT (auto-generates INSERT)
               - No `bulkInsert` beside it (the server drops a `bulkInsert` sent with bulk_load)
           - **Amazon Redshift needs no AWS setup for bulk_load**: Celigo stages the files in Celigo-managed encrypted storage and Redshift loads them with COPY — no S3 bucket, IAM role, cluster role attachment or extra connection field. The save is accepted on either `redshift.authType` (accesskey and awsIam) and against a provisioned cluster or a Serverless workgroup alike. Never steer a Redshift import to bulk_insert for lack of setup.
@@ -514,13 +514,15 @@ Rdbms:
           type: boolean
           description: |-
             When true, a custom merge query replaces the auto-generated MERGE statement, enabling ignore-existing logic, conditional updates, or multi-table operations ("Override merge/insert statement" on the import form).
-            The override SQL lives in `query` and references `{{preMergeTemporaryTable}}` (also written `{{import.rdbms.bulkLoad.preMergeTemporaryTable}}`) for the staging table and `{{tableName}}` for the destination table.
+            The override SQL lives in `query` and references `{{{import.rdbms.bulkLoad.preMergeTemporaryTable}}}` for the staging table and `{{{import.rdbms.bulkLoad.tableName}}}` for the destination table. These are the only names for them: bare `tableName` and `preMergeTemporaryTable` without the path are not defined, and the load fails.
             The SQL itself in this field fails the save: 422 `invalid_field` "Invalid value '<the statement>' for field 'rdbms.bulkLoad.overrideMergeQuery'. Reason: CastError."
           x-celigo-ai-guidance:
             - |-
               This is the switch, not the SQL. Set it to true and put the statement in `query` (one string); the import form shows the SQL box only while "Override merge/insert statement" is checked. With it false or absent the platform generates the INSERT / MERGE from `bulkLoad.tableName` and `bulkLoad.primaryKeys`, and `query` stays empty.
             - |-
-              The statement runs after the files are loaded into the staging table: read from `{{preMergeTemporaryTable}}` (also written `{{import.rdbms.bulkLoad.preMergeTemporaryTable}}`) and write to `{{tableName}}`; the form warns when the staging-table placeholder is missing. Use it for ignore-existing, conditional updates or multi-table work the generated MERGE cannot express — for example `INSERT INTO {{tableName}} (id, total) SELECT id, total FROM {{preMergeTemporaryTable}}`.
+              The statement runs after the files are loaded into the staging table: read from `{{{import.rdbms.bulkLoad.preMergeTemporaryTable}}}` and write to `{{{import.rdbms.bulkLoad.tableName}}}`; the form warns when the staging-table placeholder is missing. Use it for ignore-existing, conditional updates or multi-table work the generated MERGE cannot express — for example `INSERT INTO {{{import.rdbms.bulkLoad.tableName}}} (id, total) SELECT id, total FROM {{{import.rdbms.bulkLoad.preMergeTemporaryTable}}}`.
+            - |-
+              Write both table placeholders with triple braces and the full `import.rdbms.bulkLoad.` path. Bare `tableName` and `preMergeTemporaryTable` without the path are not in the template model, so the load fails. Double braces escape the name as a quoted string literal (`'<staging table>'`), which the database rejects as a table reference.
         aggregation:
           type: object
           description: |-
