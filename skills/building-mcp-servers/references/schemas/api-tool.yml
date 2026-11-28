@@ -18,7 +18,8 @@ ApiTool:
       pattern: "^[A-Za-z0-9_\\-.]+$"
       description: |-
         MCP tool name exposed to clients. Must be unique across all tools
-        and APIs within this server.
+        and APIs within this server. Duplicate names return 422
+        `mcp_server_duplicate_item_name`.
       x-celigo-ai-guidance:
         - |-
           Must be unique across all tools and APIs within this MCP server.
@@ -40,7 +41,12 @@ ApiTool:
     disabled:
       type: boolean
       default: true
-      description: When true, this API tool is disabled and will not be exposed to MCP clients.
+      description: |-
+        When true, this API tool is disabled and will not be exposed to MCP
+        clients: `tools/list` leaves it out, and a `tools/call` that still names
+        it gets JSON-RPC error -32601 ("Tool not found: …") with
+        `error.data.hint` `refresh_tools_list`, the same answer as for an
+        unknown name.
       x-celigo-ai-guidance:
         - Whether this API tool is disabled within the MCP server.
       examples: [false, true]

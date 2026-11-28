@@ -30,6 +30,13 @@ PageProcessor:
           - Retrieve additional details from a system
           - Validate data against a reference source
           - Enrich records with related information
+        - |-
+          The lookup must answer in one call. An export that references an async helper
+          (`http._asyncHelperId`) is refused as a page processor: the flow's save fails with
+          422 `invalid_flow` ("Invalid flow - async export <name> of type  cannot be used as a
+          pageProcessor") on create and on every later update, until the helper is removed
+          from the export (verified live 2026-11-11). Put an asynchronous export in
+          `pageGenerators`, or use an import with an async helper.
     _importId:
       type: string
       format: objectId
@@ -47,15 +54,43 @@ PageProcessor:
     proceedOnFailure:
       type: boolean
       description: |-
-        When true, records that fail in this processor continue to subsequent steps and the
-        error is logged. When false, failed records stop at this step.
+        When true, a record that fails in this step still continues to the following steps
+        (the UI's "Proceed to the next application regardless"); when false, the failed record
+        stops here until it is fixed and retried. Either way the failure is recorded as an open
+        error of the flow, listed on the flow's Errors page with its retry data — the setting
+        changes the record's path, never whether the error exists.
       examples: [true, false]
       x-celigo-ai-guidance:
         - |-
-          When true:
-          - Errors are logged but don't stop the flow
-          - Subsequent processors continue execution
-          - Failed records may be skipped
+          Verified 2026-11-06 against production open-error records, on steps that have further
+          steps after them as well as on last steps: a failure on a `proceedOnFailure: true` step
+          is an open, retryable flow error like any other. The Help Center's flow-error
+          notification rule (article 8864920211355: integrator.io checks for new open errors and
+          emails subscribers a summary) is stated over open errors and names no exception for
+          this setting — so, per that article, do not present the setting as a reason a
+          flow-error notification email was not sent, and do not suggest turning it off to test
+          email delivery.
+        - |-
+          A record that continues past its failure arrives at later steps WITH the fields its
+          response mapping extracts from the failure envelope: `statusCode` (422 — the platform's
+          verdict on the record, not the HTTP status the destination answered, which is in
+          `errors[].code`) and `errors` (an array) are present; `id` is present only when the
+          import's id path resolves on the reply the destination sent. Verified live 2026-11-10 in
+          flow runs of an HTTP import with `proceedOnFailure: true` and `id` / `statusCode` /
+          `errors` mapped: a record failed by `failPath` on a 200 echo body reached the next
+          router carrying `statusCode` 422, `errors` and the `id` read from that body; records
+          answered a real 404 carried `statusCode` 422 and `errors` and no `id`; written records
+          carried `statusCode` 200 and no `errors`. That 200 is the platform's verdict as well:
+          in a flow run on 2026-11-13, imports whose destinations answered 201 and 204 each
+          mapped `statusCode` 200. So a router after
+          the step picks out the failed records with a rule on the mapped `statusCode` equal to
+          422 (or `errors` not empty) and lets every other record take the other branch —
+          written records, and records the import's input filter skipped, which are not failures:
+          their response mapping runs against the ignored response, so they carry a mapped
+          `statusCode` of 200, a mapped `ignored` of `true` and no mapped `id` (verified live
+          2026-11-20 in a flow test run); a rule on the mapped
+          `id` being empty holds only where the destination assigns an id solely to a record it
+          wrote. `hooks.postResponseMap` documents the shape in that hook.
     responseMapping:
       $ref: "./response-mapping.yml#/ResponseMapping"
     hooks:
@@ -68,18 +103,88 @@ PageProcessor:
             Hook that runs after the step's response mapping completes. The function receives
             `options.postResponseMapData` (the records, with response mapping applied) and
             `options.responseData` (the step's per-record results, in the same order) and returns
-            `postResponseMapData`, same length. A record an import step failed is in neither array
-            unless `proceedOnFailure` is true. Then it is included, without the fields response
-            mapping would have added, and its `responseData` entry has `statusCode` 422 and
-            `errors` as an object keyed by index (`"0"`, `"1"`, ...) rather than an array. A
-            successful entry has no `errors`.
+            `postResponseMapData`, same length. What an entry holds depends on the step and on
+            the record's outcome. Import step: the entry of a record that was written carries the
+            `statusCode` and the destination's reply, and no `errors`. Lookup step, where no entry
+            has a `statusCode`: the entry of a record the lookup returned records for carries them
+            in `data`, with an empty `errors` array; the entry of a record the lookup returned
+            nothing for carries an empty `data` and an empty `errors`; the entry of a record the
+            lookup's `inputFilter` skipped carries an empty `data`, an empty `errors` and
+            `ignored: true`. A record the step failed is in neither array unless
+            `proceedOnFailure` is true. Then it is included. On an import step it carries the
+            fields its response mapping extracted from the failure envelope (`statusCode` 422 and
+            `errors`; `id` only when the id path resolves on the destination's reply), and its
+            `responseData` entry has `statusCode` 422 and `errors`, an array of
+            `{code, message, source}`. On a lookup step it carries none of the step's
+            response-mapped fields, and its entry holds only `errors` (the same array) and
+            `recordId`. An error this hook raises is stored at
+            retry stage `post_response_mapping`: a retry runs the hook again on the saved record
+            (as response mapping left it) and the step's stored reply, without repeating the
+            lookup or the destination request. On a step that has no connection of its own, this
+            hook makes later steps fail in the page-processor preview (a known issue,
+            described in the guidance).
           x-celigo-ai-guidance:
             - |-
-              Verified live 2026-10-22 in flow runs of an HTTP import, three records with one
+              Verified live 2026-11-12 in flow runs with this hook on an HTTP lookup step and on
+              an HTTP import step. Import step, two written records: each entry held `statusCode`
+              (200), `id`, `_json`, `_headers` and `recordId`, and neither `errors` nor `ignored`.
+              Lookup step with `proceedOnFailure: true`, four records, no entry holding
+              `statusCode`: the entry of the record the lookup returned one record for held
+              `data` (that record), `errors` (`[]`), `dataURIs`, `groupId`, `ignoredResults`,
+              `recordId`, `resultRecordIds` and `subGroupIdMapForSuccess`; the entry of the record
+              the lookup answered an empty array for held the same members without `groupId`,
+              with `data` `[]`; the entry of the record the lookup's `inputFilter` skipped held,
+              beside an empty `data` and an empty `errors`, `ignored: true`, `stage:
+              "inputFilter"` and `ignoredData`; the entry of the record the lookup failed (HTTP
+              404) held only `errors` (`[{code: 404, message: "Not Found", source:
+              "application"}]`) and `recordId`.
+              A run with `proceedOnFailure` false over a returned, a failed and a skipped record
+              held the returned and the skipped record in both arrays and nothing for the failed
+              one. So a hook on a lookup step that lets a record through only when its entry's
+              `statusCode` is 2xx reads `undefined` and stops every record. Read the entry
+              instead: `errors` not empty is a failed lookup, `ignored` true a skipped one, an
+              empty `data` no match.
+            - |-
+              Verified live 2026-11-14 in flow runs of an HTTP import, three records with one
               answered 404: with `proceedOnFailure` unset, both arrays held the two written
-              records; with `proceedOnFailure: true` they held all three, and a hook that called
-              `.map` on each entry's `errors` threw on the failed one, failing the page. Read
-              errors with `Object.values(entry.errors || {})`.
+              records; with `proceedOnFailure: true` they held all three. The written records'
+              entries held `statusCode` (200), `id`, `_json`, `_headers` and `recordId`, and no
+              `errors`; the failed record's entry held `statusCode` (422), `_json`, `recordId`
+              and `errors` — an array (`Array.isArray` true) of one `{code: 404, message: "Not
+              Found", source: "application"}` with exactly those three keys. A run whose request
+              body template failed to render gave each record's entry the same shape (`code:
+              "handlebars_template_parse_error"`, `source: "resource"`). The record's own
+              response-mapped `errors` field is fuller: the same error with the platform's
+              bookkeeping fields as well (`stage`, `traceKey`, `retryDataKey` and others). So a
+              hook reads an entry's errors as an array: `.map` on the failed entry's `errors`
+              ran, and `Object.values(entry.errors || {})` reads the same items.
+            - |-
+              A retry of this hook's error never re-queries the looked-up system or re-sends to
+              the destination, so a fix made there (an item created, a search corrected) does not
+              reach the retried record and the same error returns on every retry. The record
+              re-enters the flow from the source (a fresh run performs the lookup), or its retry
+              data is edited to carry the field the hook reads and then retried — the hook passes
+              and the record continues to the next step. To fail a lookup on "no match" so that a
+              retry runs the lookup again, raise the error from the lookup's `preSavePage` hook or
+              an HTTP `successPath` instead (stage `page_processor_export`). Verified live
+              2026-11-06 on a lookup with this hook, one-to-one and one-to-many: the retried
+              error's message carried the original lookup reply, the connection's debug log showed
+              no new request, and after the retry data was edited the retry passed the hook and
+              reached the next import; the same day a `preSavePage` error and a `successPath`
+              error on that lookup were each retried with a new lookup request and a fresh reply.
+            - |-
+              Known issue, until the fix is released: on a step that has no
+              `_connectionId` — a step that calls a Tool (`ToolImport`), or an AI agent or
+              guardrail step saved without a connection — this hook makes the page-processor
+              preview (`previewPageProcessor`) of every later step answer 422
+              `unexpected_preview_error` with `source: internal` and the message `Cast to
+              ObjectId failed for value "{ _id: undefined }" (type Object) at path "_id" for
+              model "Connection"`, whatever the function does; with a hooked Tool step in a
+              branch of a flow with `routers` the same message came back with no `code` and no
+              `source`. The hooked step itself and the steps before it preview, and a flow test
+              run and a real run run the hook and deliver the record, so read what reaches the
+              later steps from a test run. The same hook on an HTTP import, which has a
+              connection, did not cause it (live, 2026-11-27).
           properties:
             function:
               type: string

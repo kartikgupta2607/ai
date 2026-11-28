@@ -1,7 +1,7 @@
 Salesforce:
   type: object
   description: |-
-    Salesforce-specific configuration for the import: the operation to perform, the API to use, and object-level settings such as `sObjectType`, `idLookup`, and `upsert`. Properties like `ignoreExisting`, `ignoreMissing`, `name`, and `description` are not part of this object — they belong at the import level.
+    Salesforce-specific configuration for the import: the operation to perform, the API to use, and object-level settings such as `sObjectType`, `idLookup`, and `upsert`. Properties like `ignoreExisting`, `ignoreMissing`, `name`, and `description` are not part of this object — they belong at the import level. An `ignoreExisting` sent inside this object is dropped without an error, so the import does not skip existing records.
   x-celigo-ai-guidance:
     - |-
       Configuration for Salesforce imports containing operation type, API selection,
@@ -678,13 +678,12 @@ Salesforce:
               ```json
               {
                 "operation": "insert",
-                "ignoreExisting": true,
                 "idLookup": {
                   "whereClause": "Email = '{{{Email}}}'"
                 }
               }
               ```
-              Checks if a record with matching Email exists; if found, skips creation
+              With `ignoreExisting: true` set at the import level (not in this object), checks if a record with matching Email exists; if found, skips creation
 
               ### Addupdate (create or update) by Email:
               ```json

@@ -2,8 +2,8 @@ NetSuite:
   type: object
   description: |-
     Configuration for NetSuite ERP connections. Used when the connection type is "netsuite".
-    The authType field selects the authentication method; token-based authentication (TBA) is
-    recommended for production.
+    The authType field selects the authentication method: token-based authentication (TBA)
+    or OAuth 2.0.
   required:
     - authType
   x-celigo-ai-guidance:
@@ -13,7 +13,8 @@ NetSuite:
   x-celigo-ui-override: >-
     authType is required by the connection form (the API itself accepts a connection without it). The
     per-auth-type requireds likewise mirror the form: basic requires email and password; token
-    requires account, environment, tokenId, and tokenSecret; token-auto requires account. The API
+    requires account, environment, tokenId, and tokenSecret; token-auto and oauth require account
+    (the form's netsuite.token.auto.account, required:true, saved as netsuite.account). The API
     enforces none of these (each was live-verified to POST 201 when omitted); they are encoded in the
     connection request schema's type=netsuite branch (not in this file, which jdbc connections also
     embed for NetSuite JDBC auth) so builders produce connectable connections.
@@ -25,6 +26,7 @@ NetSuite:
         - basic
         - token
         - token-auto
+        - oauth
       x-celigo-deprecated-enum-values:
         # `basic` is kept in source (existing connections may still report it) but stripped from
         # the published bundle: new basic connections are rejected by the API (TBA-only WSDLs).
@@ -33,21 +35,34 @@ NetSuite:
         basic: Legacy email and password authentication (not recommended for new connections).
         token: Manual Token-Based Authentication (TBA) using tokenId and tokenSecret from a NetSuite integration record.
         token-auto: Automatic token management via Celigo's iClient; requires only the NetSuite account ID.
+        oauth: OAuth 2.0 machine-to-machine (client credentials signed with a certificate); needs the NetSuite account ID. The server fills `oauth2`; values sent for `oauth2`, `entityId`, and `roleId` are ignored.
       description: |-
         Authentication method for the NetSuite connection. token-auto delegates the token
-        lifecycle to an iClient; token uses a manually-supplied tokenId/tokenSecret pair.
+        lifecycle to an iClient; token uses a manually-supplied tokenId/tokenSecret pair; oauth
+        uses a certificate-signed client credentials grant that NetSuite must authorize.
+        An oauth connection runs RESTlet-based exports and imports only. One that reads or
+        writes through SuiteTalk (SOAP), such as a saved-search or file export or a SuiteTalk
+        record import, still saves on it, and is refused when it is previewed or invoked with
+        400 `netsuite_oauth2_soap_not_supported`. Until NetSuite has authorized the connection,
+        a RESTlet export preview and the connection test answer
+        `netsuite_oauth2_reconnect_required`.
       x-celigo-ai-guidance:
         - |-
           Default to "token-auto" for new connections, including placeholders (only the account id is needed).
           Use "token" when the user supplies their own tokenId/tokenSecret. Do not create "basic" connections:
           the API rejects them with 422 "netsuite_wsdl_tba_mandatory" because the available WSDL versions
           require Token-Based Authentication.
+        - |-
+          Don't attach a SuiteTalk (SOAP) step to an "oauth" connection: a saved-search or file export
+          (netsuite.type "search" or "file") saves with 201 but its preview fails with 400
+          "netsuite_oauth2_soap_not_supported". Build the step as a RESTlet export or import, or use a
+          "token" or "token-auto" connection.
       x-lowercase: true
     account:
       type: string
       examples: ["TSTDRV1234567"]
       description: |-
-        NetSuite account ID (automatically uppercased), required for token and token-auto authentication.
+        NetSuite account ID (automatically uppercased), required for token, token-auto, and oauth authentication.
         Found in NetSuite under Setup > Company > Company Information. Non-production accounts
         carry an environment suffix (e.g. `123456_SB1`); production and beta use the bare id.
       x-uppercase: true
@@ -66,16 +81,31 @@ NetSuite:
         beta: Connect to the NetSuite beta/release-preview environment.
       description: |-
         NetSuite environment to connect to. Defaults to production when not specified.
+        Refreshing a sandbox deletes the Token ID and Token secret issued in that sandbox
+        (Celigo's sandbox-refresh guide), so a connection with authType "token" into a
+        refreshed sandbox needs a token created there again.
     tokenId:
       type: string
       examples: ["c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2"]
       description: |
         NetSuite TBA token ID (encrypted at rest). Required when authType is "token".
 
-        Generated in NetSuite under Setup > Users/Roles > Access Tokens.
+        Generated in NetSuite under Setup > Users/Roles > Access Tokens, for the Application
+        the connection signs its requests with — `integrator.io` unless `_iClientId` names another
+        integration record — and the user and role the connection should act as.
         Must be paired with the corresponding tokenSecret.
       x-celigo-ai-guidance:
         - Not needed when authType is "token-auto" — integrator.io manages the token wiring in that mode.
+        - |-
+          A token NetSuite does not recognize fails the connection test with `invalid_login_attempt`
+          (HTTP 200, `errors[].code`, source `application`) and the save sets the connection offline;
+          the response carries no detail of what NetSuite refused — that detail is in NetSuite's
+          Login Audit Trail (the Detail column), not in the connection's error.
+        - |-
+          A token created for a different Application than the one the connection signs with is
+          refused the same way, so when a freshly created token is refused, which Application it
+          was created for is the first question; a missing iClient is not the cause on a connection
+          that has none — it signs with Celigo's `integrator.io` record.
       writeOnly: true
     tokenSecret:
       type: string
@@ -83,14 +113,20 @@ NetSuite:
       description: |
         NetSuite TBA token secret (encrypted at rest). Required when authType is "token".
 
-        Generated alongside the tokenId in NetSuite. Treat as a sensitive credential.
+        Generated alongside the tokenId in NetSuite, which shows the pair once; treat as a
+        sensitive credential.
       x-celigo-ai-guidance:
         - Not needed when authType is "token-auto".
+        - Replaced together with tokenId — NetSuite shows the pair once, when the token is created.
       writeOnly: true
     entityId:
       type: string
       examples: ["1234"]
-      description: NetSuite entity/user ID associated with the token.
+      description: |-
+        NetSuite internal id of the user (entity) whose access token the connection logs in
+        with. On a token-authenticated connection the platform records it from the token
+        NetSuite accepted, together with `roleId` and `roleName`; a value that still names the
+        previous token's user after a refused login is the symptom of the refusal, not its cause.
     tokenName:
       type: string
       examples: ["Celigo integration token"]
@@ -98,11 +134,19 @@ NetSuite:
     roleId:
       type: string
       examples: ["3"]
-      description: |
-        NetSuite role ID that determines the permissions for this connection.
-
-        The role controls which records, fields, and operations are accessible.
-        Must match the role associated with the access token in NetSuite.
+      description: |-
+        NetSuite internal id of the role the connection's access token logs in as — the role
+        selected when the token was created (`token`) or chosen on NetSuite's consent page during
+        Save & authorize (`token-auto`). The platform records it from the token NetSuite accepted,
+        together with `roleName` and `entityId`; the connection form has no role field for token
+        authentication, and a value that still names the previous token's role after a refused
+        login is the symptom of the refusal, not its cause.
+      x-celigo-ai-guidance:
+        - |-
+          On a token-authenticated connection a value sent on create or update is stored but has no
+          effect on the login — NetSuite applies the role bound to the token — and is replaced from
+          the token at the next successful login; never write it to "match" a new token or offer
+          to. The token is the change.
     email:
       type: string
       deprecated: true
@@ -160,7 +204,9 @@ NetSuite:
     roleName:
       type: string
       examples: ["Administrator"]
-      description: Human-readable name of the NetSuite role (display purposes only).
+      description: |-
+        Display name of the role in `roleId`, recorded with it from the token NetSuite accepted
+        (display purposes only).
     wsdlVersion:
       type: string
       examples: ["latest"]
@@ -261,7 +307,40 @@ NetSuite:
       format: objectId
       x-celigo-refModel: iclients
       examples: ["66a1b2c3d4e5f60718293a4b"]
-      description: ID of the iClient used for token-based authentication.
+      description: |-
+        iClient holding the consumer key and secret of the NetSuite integration record the
+        connection signs its requests with, when that record is not Celigo's own — an Integration
+        App's record (set by the app's install) or the account's own; access tokens are then created
+        for that record's Application. Absent on a standalone connection, which signs with Celigo's
+        `integrator.io` record (no client ID or secret is entered anywhere) and whose access tokens
+        must be created for Application `integrator.io`. With `authType` `oauth` it is optional;
+        when set, the iClient must carry `oauth2.clientId` and `oauth2.clientSecret`, otherwise
+        the save fails with 422 `missing_required_field` on `netsuite._iClientId` ("Expected
+        field: oauth2.clientId/clientSecret to be present.").
+    oauth2:
+      type: object
+      readOnly: true
+      description: |-
+        Machine-to-machine state of an `oauth` connection, written by the server on save and
+        ignored on write; absent for other auth types.
+      properties:
+        grantType:
+          type: string
+          enum: [clientcredentials]
+          x-enumDescriptions:
+            clientcredentials: OAuth 2.0 client credentials grant signed with a certificate.
+          description: Grant used to obtain tokens; always `clientcredentials`.
+          examples: ["clientcredentials"]
+        scope:
+          type: array
+          description: Scopes requested for the token; always `restlets` and `rest_webservices`.
+          items:
+            type: string
+            enum: [restlets, rest_webservices]
+            x-enumDescriptions:
+              restlets: NetSuite RESTlet access.
+              rest_webservices: NetSuite REST web services access.
+          examples: [["restlets", "rest_webservices"]]
   # The per-authType conditional requireds live in request.yml's type=netsuite branch (not here):
   # jdbc connections embed this same subdoc for NetSuite JDBC auth, and the connection-form rules
   # (e.g. token-auto requiring account) do not apply there. The form's tokenAccount/tokenEnvironment

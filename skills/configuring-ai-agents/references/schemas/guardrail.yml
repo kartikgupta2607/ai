@@ -10,12 +10,13 @@ GuardrailConfig:
 
     A `_connectionId` on the parent import is only needed for BYOK
     `ai_agent` guardrails. In responses the server echoes the active type's
-    sub-object and applies the `confidenceThreshold` default; it also
-    returns inactive sibling sub-objects (e.g. `moderation: {categories: []}`
-    on a `pii` guardrail, or a populated `pii` left over from a type switch),
-    but only the active type's sub-object is meaningful. Legacy documents
-    may carry a server-written default `aiAgent` stub on `pii`/`moderation`
-    guardrails; current servers strip the inactive `aiAgent` on write.
+    sub-object and applies the `confidenceThreshold` default. A save keeps
+    only the active type's sub-object, so switching `type` on PUT removes
+    the previous type's block. A guardrail last saved before that rule may
+    still return inactive siblings (e.g. `moderation: {categories: []}` on
+    a `pii` guardrail, or a server-written `aiAgent` stub on a
+    `pii`/`moderation` guardrail); only the active type's sub-object is
+    meaningful.
   x-celigo-ai-guidance:
     - |-
       Guardrails are safety and compliance checks that can be applied

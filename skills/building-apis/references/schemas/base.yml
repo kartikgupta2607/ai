@@ -72,6 +72,31 @@ APIBase:
       default: false
       description: When true, the API rejects all incoming requests.
       examples: [false]
+    isSchemaValidationActive:
+      type: boolean
+      description: |-
+        When true, every call is checked before any step runs: a request that fails the
+        request's `bodySchema` (methods other than GET; a missing body counts as empty) or
+        omits a `queryParams[].required` parameter is refused with 400 and one error per finding
+        — `request_body_schema_validation_failed`, whose `path`, `keyword`, and `params` name
+        the failing rule, or `request_query_param_required` ("Query parameter '<key>' is
+        required and must not be empty.") — and a response that fails its own `bodySchema` is
+        replaced by 500 `response_body_schema_validation_failed` with no field detail (a 204
+        response is not checked). A request `bodySchema` that cannot be compiled, such as one
+        with a `$ref` to a missing pointer, fails every call with 501 `body_schema_not_compilable`
+        ("The body schema at builder.request.bodySchema could not be compiled.").
+        `POST /v1/apis/{_id}/test/run` applies the request checks and answers 400 with the same
+        codes; a response that fails its schema stays 200 there. Absent means off; also settable
+        through `PATCH /v1/apis/{_id}` at `/isSchemaValidationActive`.
+      examples: [true]
+    failOnOfflineConnection:
+      type: boolean
+      description: |-
+        When true, a call to a builder-mode API is refused before any step runs if a connection
+        the API uses is offline. Set to true on create when omitted. Present on responses only
+        when set: a PUT that omits it removes it, which turns the check off, and
+        `PATCH /v1/apis/{_id}` on `/failOnOfflineConnection` changes it on its own.
+      examples: [true]
     timeoutPeriod:
       type: integer
       minimum: 0
@@ -79,6 +104,9 @@ APIBase:
       description: |-
         Request-timeout override in seconds (1–120). `0` is a sentinel meaning "use the
         120-second default" — the server rewrites it on write, so a stored value is never 0.
+        A call still running when the timeout passes answers 504 `api_timeout`. With
+        `failOnOfflineConnection` false or absent, a step whose connection is offline holds the
+        call until then.
       examples: [120, 30]
     logging:
       type: object
@@ -242,3 +270,8 @@ APIBase:
           PUT with `draft: false` clears the flag and the expiry, promoting the draft to a
           permanent API. PUT with `draft: true` on a non-draft API is silently ignored, and
           a PUT that omits the field leaves an existing draft flag unchanged.
+        - |-
+          Clearing the flag approves the draft, and the approval belongs to the person
+          the draft was created for: in integrator.io they give it by accepting the
+          draft. An agent acting for that person never sends `draft: false` for them,
+          and never gives them this request as the way to keep a draft.

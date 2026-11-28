@@ -23,15 +23,14 @@ GroupMembership:
 EndUserUpdateRequest:
   type: object
   description: |-
-    Replacement access for an end user. Both arrays are stored as sent, so
-    each must carry every entry to keep, not just the changes.
-  required:
-    - groupMemberships
-    - resourceGrants
+    Access to store for an end user. Each array sent replaces the stored one
+    in full, so it must carry every entry to keep, not just the changes; an
+    array left out of the body stays as stored — send `_roleIds` alone to
+    change the roles without touching memberships or direct grants.
   properties:
     groupMemberships:
       type: array
-      description: Complete set of groups the end user should belong to after the update.
+      description: Complete set of groups the end user should belong to after the update. `source` defaults to `manual` on an entry that omits it.
       items:
         $ref: '#/GroupMembership'
     resourceGrants:
@@ -39,6 +38,13 @@ EndUserUpdateRequest:
       description: Complete set of direct resource grants the end user should hold after the update.
       items:
         $ref: ./resource-grant.yml#/ResourceGrant
+    _roleIds:
+      type: array
+      description: Complete set of roles pinned directly to the end user after the update. Each id must name a role of this account (400 `validation_failed` otherwise).
+      items:
+        type: string
+        format: objectId
+        x-celigo-refModel: roles
 
 EndUser:
   type: object
@@ -137,6 +143,24 @@ EndUser:
         type: string
         format: objectId
         x-celigo-refModel: roles
+    roleAssignments:
+      type: array
+      readOnly: true
+      description: |-
+        The direct role pins with their source, returned by the update
+        operation beside `_roleIds`; the end users list carries `_roleIds`
+        only.
+      items:
+        type: object
+        properties:
+          _roleId:
+            type: string
+            format: objectId
+            x-celigo-refModel: roles
+            description: The pinned role.
+          source:
+            type: string
+            description: How the pin was made — `manual` for a role set on the record by an owner or administrator.
     email:
       type: string
       format: email

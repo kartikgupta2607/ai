@@ -48,6 +48,15 @@ GroupBy:
       iterate ``{{#each rows}}``); hook code sees the array as the
       record element and must not assume object shape.
     - |-
+      On an HTTP export and on a Snowflake export that group with this field, a grouped record's
+      trace key at the next step was the platform's default key, not the value of the export's
+      `traceKeyTemplate` (a known issue; the fix carries the template's value to the next
+      step): the first field on the flow's trace-key list present on the rows, when every row
+      holds the same value. Rows that each carry their own `id` left a multi-row group's key
+      blank; an `id` holding the group's identifier on every row keyed the group on it. A
+      Transform 2.0 in `mode: create` that turned each group into one object made the template
+      the key on the HTTP export (see `traceKeyTemplate`).
+    - |-
       A grouped record is ONE record: Mapper 2.0 and Transform 2.0 root
       JSONPath at the array (``$[0].<field>`` / ``$[*].<field>``;
       ``$.<field>`` resolves nothing), and a Transform 2.0 in ``mode:

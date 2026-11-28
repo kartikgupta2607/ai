@@ -11,7 +11,7 @@ Jdbc:
     | ["per_record"]   | query (array of SQL strings) | bulkInsert        |
     | ["per_page"]     | query (array of SQL strings) | bulkInsert        |
     | ["bulk_insert"]  | bulkInsert object            | query             |
-    | ["bulk_load"]    | bulkLoad object              | query             |
+    | ["bulk_load"]    | bulkLoad object; query too when bulkLoad.overrideMergeOrInsertQuery is true | query otherwise |
 
     **Critical:** query IS AN ARRAY OF STRINGS
     The query field must be an array of plain strings, NOT a single string and NOT an array of objects.
@@ -28,7 +28,9 @@ Jdbc:
       x-celigo-agent:
         - sql
       description: |-
-        Array of SQL query strings to execute. REQUIRED when queryType is ["per_record"] or ["per_page"].
+        Array of SQL query strings to execute. REQUIRED when queryType is ["per_record"] or ["per_page"],
+        and on a ["bulk_load"] import whose bulkLoad.overrideMergeOrInsertQuery is true, where its one
+        statement replaces the generated MERGE / INSERT.
 
         Each element is a complete SQL statement as a plain string. Typically contains a single query.
 
@@ -81,7 +83,7 @@ Jdbc:
         | ["per_record"]   | query (array)         | bulkInsert   |
         | ["per_page"]     | query (array)         | bulkInsert   |
         | ["bulk_insert"]  | bulkInsert object     | query        |
-        | ["bulk_load"]    | bulkLoad object       | query        |
+        | ["bulk_load"]    | bulkLoad object; query too when bulkLoad.overrideMergeOrInsertQuery is true | query otherwise |
 
         **Examples**
         - Per-record upsert: ["per_record"]
@@ -96,10 +98,28 @@ Jdbc:
       properties:
         tableName:
           type: string
-          description: |
-            Target database table name for bulk insert. REQUIRED.
-            Can include schema qualifiers (e.g., "schema.tableName").
-          examples: ["public.orders", "dbo.Customers"]
+          description: |-
+            The table Batch Insert writes to, resolved by the driver at run time; set when
+            `queryType` is `["bulk_insert"]`. On a Databricks connection this must be the bare
+            table name — Batch Insert resolves it only within the catalog and schema the
+            connection defaults to (its `ConnCatalog` / `ConnSchema` connection properties): a
+            `catalog.schema.table` name fails every record with
+            `MAPPING_INVALID_TABLE_OR_COLUMN_NAME` ("The table name or one of the column names
+            in the mapping is invalid") even when the table, its columns and the grants all
+            exist, and a `schema.table` name does not write either. Oracle Thin accepts
+            `schema.table`; the `per_record` query type takes a fully qualified name in its
+            SQL instead.
+          x-celigo-ai-guidance:
+            - |-
+              `MAPPING_INVALID_TABLE_OR_COLUMN_NAME` on a Databricks Batch Insert whose
+              tableName is `catalog.schema.table` is the qualification, not a misspelling.
+              Verify the table and the mapped columns through the import's connection
+              (DESCRIBE); when they resolve, the fix is the bare table name plus
+              `ConnCatalog` / `ConnSchema` on the connection (a second connection when another
+              import on it needs a different catalog or schema), or the `per_record` query
+              type with the qualified name in the SQL — never renaming verified columns,
+              another permission check, or a Support ticket.
+          examples: ["netsuite_customer_directory", "dbo.Customers"]
         batchSize:
           type: string
           description: |
@@ -129,8 +149,40 @@ Jdbc:
         overrideMergeOrInsertQuery:
           type: boolean
           description: |-
-            When true, a custom merge/insert query replaces the auto-generated statement for the
-            bulk load, enabling ignore-existing logic or conditional updates.
+            When true, the statement in `query` replaces the auto-generated MERGE / INSERT for the
+            bulk load, enabling ignore-existing logic or conditional updates. The statement reads the
+            staging table as `{{{import.jdbc.bulkLoad.preMergeTemporaryTable}}}` and writes the
+            destination as `{{{import.jdbc.bulkLoad.tableName}}}`; the path is `jdbc`, not `rdbms`,
+            and a name outside it is not defined. Saving it true with no
+            `query` entry fails with 422 `missing_required_field` ("jdbc bulk_load imports require a
+            query."), on create and on update.
+          x-celigo-ai-guidance:
+            - |-
+              Write both table placeholders with triple braces and the `import.jdbc.bulkLoad.` path. Bare `tableName` and `preMergeTemporaryTable`, and the `import.rdbms.bulkLoad.` path used by rdbms imports, are not in the JDBC template model, so the load fails. Double braces HTML-escape the value, which breaks a quoted identifier such as `"SCHEMA"."TABLE"`.
+        aggregation:
+          type: object
+          description: |-
+            How the staged files are cut and handed to the database. The server fills `type` and
+            `maxFileSizeInMB` when they are omitted, so `loadDataAsAvailable` is the only value to
+            author. A `type` other than `size`, or a `loadDataAsAvailable` that is not a boolean,
+            drops the whole block on save without an error.
+          properties:
+            type:
+              type: string
+              enum: [size]
+              x-enumDescriptions:
+                size: Files are cut by size
+              description: Filled by the server on save; the only mode is size-based cutting.
+            maxFileSizeInMB:
+              type: integer
+              description: Size of each staged file in MB; the server fills 250 when the field is omitted, so leave it out.
+              examples: [250]
+            loadDataAsAvailable:
+              type: boolean
+              description: |-
+                When true, each staged file is sent for loading as soon as it is written, so the
+                dataset arrives as several smaller loads. When false, every file is held until all
+                are ready and they are loaded together.
     lookups:
       type: array
       items:
@@ -206,3 +258,20 @@ Jdbc:
           save.
       x-celigo-agent:
         - lookup
+  if:
+    required: [queryType, bulkLoad]
+    properties:
+      queryType:
+        type: array
+        contains:
+          const: bulk_load
+      bulkLoad:
+        required: [overrideMergeOrInsertQuery]
+        properties:
+          overrideMergeOrInsertQuery:
+            const: true
+  then:
+    required: [query]
+    properties:
+      query:
+        minItems: 1

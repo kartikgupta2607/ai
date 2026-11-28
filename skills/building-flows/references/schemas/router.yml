@@ -73,8 +73,18 @@ Router:
           examples: ["60a2c4e6f321d800129a1a3c"]
         function:
           type: string
-          description: Function name that returns the branch name for each record
+          description: |-
+            Function in the script that picks each record's branches. It receives the record as
+            `options.record` and returns the zero-based positions of the chosen branches in
+            `branches` as an array of integers, such as `[0]`, or `[0, 1]` under
+            `all_matching_branches`; an empty array routes the record down no branch, without an error.
           examples: ["routeByCustomerType", "calculateBranch"]
+          x-celigo-ai-guidance:
+            - |-
+              Return branch positions, never branch names: a name, or a position with no branch,
+              fails the record at the routing stage with `branch_not_defined` ("The branch is
+              undefined or unavailable"). Under `first_matching_branch`, returning more than one
+              position fails the record with `invalid_script_routing`.
     branches:
       type: array
       description: |

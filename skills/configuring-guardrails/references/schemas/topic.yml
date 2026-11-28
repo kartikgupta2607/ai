@@ -7,10 +7,10 @@ Topic:
     `TopicImport`; the server fills `batchSize` with its default when it is omitted.
   x-celigo-ai-guidance:
     - |-
-      Sending this object without `adaptorType` is enough — the server infers `TopicImport`
-      from it. Never add a `_connectionId`: the server then validates the document as that
-      connection's adaptor instead (an http connection fails with 422 missing_required_field
-      "http subschema not defined").
+      Send `adaptorType: TopicImport` with this object and its `_topicId`. Never add a
+      `_connectionId`: the server then validates the document as that connection's adaptor
+      instead (an http connection fails with 422 missing_required_field "http subschema not
+      defined").
     - |-
       Without a mapping, each message is the record as the step received it. With
       `oneToMany: true` and `pathToMany`, every element of that array is published as its own
@@ -26,19 +26,25 @@ Topic:
       type: string
       format: objectId
       x-celigo-refModel: topics
-      x-celigo-ui-override: >-
-        Required by the Event Streams publisher form (fieldDefinitions/resources/imports/import.js:
-        'topic._topicId' is required:true, validWhen isNot ''). The API saves a TopicImport
-        without it, so the requirement is encoded on the request schema to mirror the form and
-        keep publishers bound to a topic.
       description: |-
         Topic the records are published to. Create or look it up with `GET /v1/topics`; the
-        topic must belong to the same account. A clone of the import made in the same
-        environment keeps `_topicId`.
+        topic must belong to the same account. A TopicImport saved without it fails with 422
+        `missing_required_field`. A clone of the import made in the same environment keeps
+        `_topicId`.
       x-celigo-ai-guidance:
+        - |-
+          Always send `topic._topicId`: a POST with `adaptorType: TopicImport` and no id —
+          `topic` empty, sent with only `batchSize`, or left out — fails with 422
+          `missing_required_field` ("Expected field: topic._topicId to be present."), and so does
+          a PUT that drops the id from a saved publisher.
         - |-
           An id that is not a topic in the account fails the save with 422 `invalid_ref`
           ("<id> is not a valid topic._topicId").
+        - |-
+          Without `adaptorType`, a `topic` object that carries no `_topicId` is not read as a
+          publisher: the POST fails with 422 `missing_required_field` naming `_connectionId`
+          ("Expected field: _connectionId to be present."). A connection is not the fix — send
+          `adaptorType: TopicImport` and the topic id.
       examples: ["6ab1f48d38d7733b4599875c"]
     batchSize:
       type: integer

@@ -28,19 +28,28 @@ ResourceGrant:
       description: |-
         Capabilities granted on the target resource. Each `:all` capability
         covers only its own kind — grant `tool:all`, `api:all`, `prompt:all`,
-        and `resource:all` together to open every item on a server.
+        and `resource:all` together to open every item on a server. `pset:all`
+        covers every permission set on the target server, including sets added
+        later, and stays in place when a set is deleted; it reaches only what
+        the sets contain — an attached tool or prompt in no set stays denied.
+        Deleting a set rewrites each `pset:<_id>` grant
+        that named it — on end users, groups and roles — to the set's member
+        capabilities, so access is kept rather than dropped.
       items:
         type: string
-        pattern: "^(?:tool|api|prompt|resource):(?:[a-fA-F0-9]{24}|all)$|^pset:[a-fA-F0-9]{24}$"
+        pattern: "^(?:tool|api|prompt|resource):(?:[a-fA-F0-9]{24}|all)$|^pset:(?:[a-fA-F0-9]{24}|all)$"
         description: |-
           Capability string for an `mcpServer` grant. `tool:`, `api:`,
           `prompt:`, and `resource:` take `all` or a 24-hex id on the target
           server — a `tools[]._toolId` or upstream tool row `_id`, an
-          `apis[]._apiId`, a `prompts[]._id`, or a `resources[]._id`; `pset:`
-          takes a `permissionSets[]._id`. Grant prompts with `prompt:<_id>`:
-          older grants written as `tool:<prompt _id>` still validate but are
-          not reported by effective access. Any other shape is rejected with
+          `apis[]._apiId`, a `prompts[]._id` or upstream prompt row `_id`, or
+          a `resources[]._id`; `pset:` takes a `permissionSets[]._id` or
+          `all`. Grant prompts with `prompt:<_id>`: older grants written as
+          `tool:<prompt _id>` still validate, but they are not reported by
+          effective access and do not open the prompt on the MCP endpoint —
+          `prompts/list` hides it and `prompts/get` is denied, and `tool:all`
+          does not cover prompts there either. Any other shape is rejected with
           400 `validation_failed` ("Invalid capability"), and an id that is
           not attached to the target server with 400 `validation_failed`
           naming the missing item.
-        examples: ["tool:all", "prompt:6b2c3d4e5f6a7b8c9d0e1f2a", "pset:6c3d4e5f6a7b8c9d0e1f2a3b"]
+        examples: ["tool:all", "prompt:6b2c3d4e5f6a7b8c9d0e1f2a", "pset:6c3d4e5f6a7b8c9d0e1f2a3b", "pset:all"]

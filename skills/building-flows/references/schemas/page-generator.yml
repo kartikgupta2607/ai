@@ -12,7 +12,9 @@ PageGenerator:
       description: |-
         Export that retrieves data from the source system. The server rejects page
         generator entries without a valid export reference unless the entry is a
-        placeholder still being set up (`setupInProgress: true`).
+        placeholder still being set up (`setupInProgress: true`). A Data loader export
+        (`type: simple`) is rejected here too: a flow references it through its top-level
+        `_exportId`.
       examples: ["60a2c4e6f321d800129a1a3c"]
       x-celigo-ai-guidance:
         - |-
@@ -24,7 +26,9 @@ PageGenerator:
     schedule:
       type: string
       description: |-
-        Cron expression for this specific generator, overriding the flow's main schedule.
+        Cron expression for this specific generator, overriding the flow's main schedule —
+        in the format of the flow's `schedule` (six fields, `?` first), and read by the
+        scheduler the same way, a five-field value included.
         When omitted, the generator inherits the flow's schedule. It is read in the flow's
         `timezone`, and a flow with no flow-level `schedule` still runs on it. PATCH reaches
         the flow-level `/schedule` and `/timezone` but not this field, so changing it is a full

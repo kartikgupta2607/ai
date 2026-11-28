@@ -26,9 +26,18 @@ As2:
         as2.fileNameTemplate is required:true, default 'file-{{timestamp}}'). Encoded to mirror
         the form so builders produce connectable configurations.
       description: |-
-        Handlebars template that names the file carrying each AS2 message payload. Include a
-        uniqueness token such as {{timestamp}} so concurrent or repeated sends do not collide;
-        defaults to file-{{timestamp}} in the form.
+        Handlebars template that names the file carrying each AS2 message payload. The rendered
+        name travels in the message's `Subject` header, as `File <name> sent from <as2Id> to
+        <partnerId>`, and is not written on the payload's MIME part. Include a uniqueness token
+        such as {{timestamp}} so concurrent or repeated sends do not collide; defaults to
+        file-{{timestamp}} in the form.
+      x-celigo-ai-guidance:
+        - |-
+          When a trading partner reports that the received document has no file name: this
+          field's name is never written on the payload's MIME part, which is where a receiving
+          server that takes the name from the payload's `Content-Disposition` header looks.
+          Keep this field and, on an import that does not compress its files, add a
+          `Content-Disposition` entry to `headers` that repeats its expression.
       examples: ["file-{{timestamp}}", "orders-{{timestamp}}.edi", "{{record.documentNumber}}.edi"]
     messageIdTemplate:
       type: string
@@ -54,14 +63,32 @@ As2:
         properties:
           name:
             type: string
-            description: Name of the HTTP header sent with the AS2 message (for example, `content-disposition`). Header names are case-insensitive.
+            description: |-
+              Name of the HTTP header, for example `Content-Disposition`. An entry named like a
+              header integrator.io sets itself, such as `Subject`, replaces that header.
+            x-celigo-ai-guidance:
+              - |-
+                Write `Content-Type`, `Content-Transfer-Encoding` and `Content-Disposition` in
+                exactly this capitalization, whatever spelling the request uses.
           value:
             type: string
             description: Value sent for the header. Supports handlebars expressions rendered against the record.
             x-celigo-agent:
               - handlebars
       description: |-
-        HTTP headers sent with the AS2 message transmission.
-        Supports both standard AS2 headers and custom headers required by trading partner agreements.
+        HTTP headers added to the request that carries the AS2 message: standard AS2 headers, or
+        custom ones a trading partner agreement requires. `Content-Type`,
+        `Content-Transfer-Encoding` and `Content-Disposition`, in exactly that capitalization, are
+        written on the payload's MIME part before the message is signed and encrypted, unless the
+        import compresses its files (`file.compressionFormat`): that part is then the compression
+        wrapper, which carries `Content-Type: application/pkcs7-mime; smime-type=compressed-data;
+        name="smime.p7z"`, `Content-Transfer-Encoding: base64` and `Content-Disposition:
+        attachment; filename="smime.p7z"` whatever these entries say.
+      x-celigo-ai-guidance:
+        - |-
+          To send the document's file name inside the signed and encrypted payload of an import
+          that does not compress its files, add a `Content-Disposition` entry whose value is
+          `attachment; filename="<the fileNameTemplate expression>"`. Without this entry the
+          name is in the `Subject` header only.
       examples:
-        - [{ "name": "content-disposition", "value": "attachment; filename=order-{{record.id}}.edi" }]
+        - [{ "name": "Content-Disposition", "value": "attachment; filename=\"order-{{record.id}}.edi\"" }]

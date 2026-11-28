@@ -24,7 +24,11 @@ Overrides:
       additionalProperties: true
     timezone:
       type: string
-      description: Override for the flow's schedule timezone
+      description: |-
+        Override for the flow's schedule timezone. Must be a name the IANA time zone database
+        recognizes: a write that sets anything else fails with 422 `invalid_value` ("<value> is
+        not a recognized IANA time zone name for overrides.timezone."). An empty string is not
+        checked.
       examples: ["America/Chicago", "Europe/Paris"]
     _runNextFlowIds:
       type: array
@@ -138,7 +142,9 @@ Overrides:
             description: Overrides the Mapper 2.0 field mappings on the abstract flow's export (lookup step), which reshape records the lookup returns.
           proceedOnFailure:
             type: boolean
-            description: Override error handling behavior
+            description: |-
+              Overrides the step's `proceedOnFailure` — whether a failed record continues to
+              the following steps. The failure is an open error of the flow either way.
           responseMapping:
             $ref: "./response-mapping.yml#/ResponseMapping"
           pageSize:
@@ -183,13 +189,13 @@ Overrides:
             properties:
               dateField:
                 type: string
-                description: Overrides the delta date field on the abstract flow's export — the record timestamp field(s) compared against the last successful run time to identify changed records. Accepts a single field or multiple comma-separated fields.
+                description: Overrides the delta date field on the abstract flow's export — the record timestamp field(s) compared against the flow's checkpoint, `{{lastExportDateTime}}`, to identify changed records. Accepts a single field or multiple comma-separated fields.
               dateFormat:
                 type: string
                 description: Overrides the moment.js format string applied to the delta cutoff timestamp; ISO 8601 is used when unset.
               startDate:
                 type: string
-                description: Overrides the fixed start timestamp used for the delta window on the abstract flow's export, in place of the last successful run time.
+                description: Overrides the abstract flow's export `delta.startDate` -- the lower bound of the first run, and of every run until one completes having exported records; later runs start from the flow's checkpoint.
               lagOffset:
                 type: integer
                 description: Overrides the abstract flow's export `delta.lagOffset` -- milliseconds taken off both ends of a delta window once the flow has a checkpoint, so records reach a run that much later. While the value stays the same, windows don't overlap; raising it re-reads the added span once, and lowering it skips the removed span. Never negative (once the flow has a checkpoint, that moves the window into the future and skips records).
@@ -265,7 +271,23 @@ Overrides:
                 description: Salt used to encrypt the corresponding bearer token.
           hooks:
             type: object
-            description: Override hook configurations
+            description: |-
+              Overrides which script runs for a hook of this step on the instance. Each key is a
+              hook name — one of the export's own hooks (such as `preSavePage` or `preParse`)
+              or, on a lookup step, the flow step's `postResponseMap` — and its value replaces
+              that hook's `function` and `_scriptId`. Keys merge with the abstract flow's hook,
+              so a value that sets only `_scriptId` keeps the inherited `function`.
+            x-celigo-ai-guidance:
+              - |-
+                Verified live 2026-11-11 on a lookup step whose flow step carried a
+                `postResponseMap` hook: an instance created with
+                `hooks: {postResponseMap: {function, _scriptId}}` on the step's entry (201)
+                showed that script on the step in `GET /v1/flows/{_id}?mergeInstance=true`, and
+                its run executed that script, while a run of a sibling instance without the
+                entry executed the abstract flow's script. An entry that set `_scriptId` alone
+                kept the abstract flow's `function` in the merged view, and its run executed
+                the instance's script under that function name. The abstract flow's
+                `overridesHelper` did not list the hook.
           transform:
             type: object
             description: Override transformation settings
@@ -309,7 +331,9 @@ Overrides:
             examples: ["5f7c579b6411271af4e7cefb"]
           proceedOnFailure:
             type: boolean
-            description: Override error handling behavior
+            description: |-
+              Overrides the step's `proceedOnFailure` — whether a failed record continues to
+              the following steps. The failure is an open error of the flow either way.
           responseMapping:
             $ref: "./response-mapping.yml#/ResponseMapping"
           idLockTemplate:
@@ -339,7 +363,16 @@ Overrides:
           hooks:
             type: object
             additionalProperties: true
-            description: Overrides the hook configurations on the abstract flow's import — custom JavaScript hooks that run at fixed points in the import lifecycle.
+            description: |-
+              Overrides which script runs for a hook of this step on the instance. Each key is a
+              hook name — one of the import's own hooks (such as `preMap`, `postMap`, or
+              `postSubmit`) or the flow step's `postResponseMap` — and its value replaces that
+              hook's `function` and `_scriptId`.
+            x-celigo-ai-guidance:
+              - |-
+                Verified live 2026-11-11: an instance updated with
+                `hooks: {postResponseMap: {function, _scriptId}}` on an import step's entry (200)
+                showed that script on the step in `GET /v1/flows/{_id}?mergeInstance=true`.
           responseTransform:
             type: object
             additionalProperties: true
@@ -396,7 +429,7 @@ Overrides:
                 examples: ["66a1f2c3b4d5e6f7a8b9c0d1"]
               function:
                 type: string
-                description: Function name within the script that returns the branch name for each record.
+                description: Function in that script that replaces the abstract router's `script.function`; it returns each record's branches as zero-based positions in the router's `branches`, such as `[0]`.
           branches:
             type: array
             description: Override branch configurations
@@ -414,7 +447,11 @@ Overrides:
                   description: Overrides the branch's description explaining its purpose and criteria.
                 inputFilter:
                   type: object
-                  description: Overrides the branch's input filter — the criteria that determine which records are routed to this branch.
+                  description: |-
+                    Overrides the branch's input filter — the criteria that determine which records are routed to this branch.
+                    Send `version` and `rules` directly; the export-filter wrapper
+                    `{type: "expression", expression: {...}}` fails the save with 422
+                    `invalid_router_branch_input_filter`.
                   properties:
                     version:
                       type: string

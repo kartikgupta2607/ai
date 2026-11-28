@@ -119,7 +119,8 @@ MCP:
         headers:
           type: array
           description: |
-            Default HTTP headers included in every request to the MCP server.
+            Default HTTP headers included in every request to the MCP server. On PUT, an
+            `mcp.http` block that omits `headers` or sends `[]` clears the stored list.
           items:
             type: object
             properties:
@@ -179,8 +180,28 @@ MCP:
           required:
             - auth
         then:
-          required:
-            - _iClientId
+          # clientRegistration "automatic" drops the iClient and rejects one (mcp_client_registration_conflict).
+          if:
+            properties:
+              auth:
+                properties:
+                  oauth:
+                    properties:
+                      clientRegistration:
+                        const: automatic
+                    required:
+                      - clientRegistration
+                required:
+                  - oauth
+            required:
+              - auth
+          then:
+            not:
+              required:
+                - _iClientId
+          else:
+            required:
+              - _iClientId
       x-celigo-ai-guidance:
         - |-
           The auth.type MUST be one of: "token", "oauth", or "custom".

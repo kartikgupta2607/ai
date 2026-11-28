@@ -6,12 +6,15 @@ Delta:
     name it in `dateField`, while HTTP exports and SQL queries carry {{lastExportDateTime}} in the
     request and save without a delta object. Each run reads the window from {{lastExportDateTime}}
     to {{currentExportDateTime}}: the flow's checkpoint and the time the run started, both less
-    `lagOffset` when it is set. Until a run has exported records the flow has no checkpoint, and
-    {{lastExportDateTime}} is `startDate` itself, unshifted. A first run is not a full export: with
+    `lagOffset` when it is set. Until a run has completed with exported records the flow has no
+    checkpoint, and {{lastExportDateTime}} is `startDate` itself, unshifted. A first run is not a full export: with
     no `startDate`, its {{lastExportDateTime}} is the run's own timestamp, so it picks up no
-    earlier changes. The checkpoint moves to a run's start time only when the run
-    exports records, so a run that exports nothing leaves it where it was, and after a failed run
-    the next run reuses the last checkpoint. On success, when `POST /v1/flows/{_id}/run` sends
+    earlier changes. The checkpoint moves to a run's start time only when the run completes
+    having exported records, so a run that exports nothing leaves it where it was, and after a
+    failed run the next run reuses the last checkpoint. That includes an HTTP export that fails
+    on a later page request after earlier pages have exported records: the next run sends the
+    same {{lastExportDateTime}}, with its own start as {{currentExportDateTime}}. On success,
+    when `POST /v1/flows/{_id}/run` sends
     `export.endDate`, the flow's checkpoint is left at that value, so an end date in the past
     moves the next run's lower bound back.
   x-celigo-ai-guidance:
@@ -36,7 +39,7 @@ Delta:
       default ``startDate`` to **today at midnight UTC** in ISO-8601 format
       (e.g. ``"2026-05-14T00:00:00.000Z"``).  This means the first run picks
       up records changed today; subsequent runs use the platform-managed
-      ``{{lastExportDateTime}}`` (the start of the last run that exported records, less ``lagOffset``).
+      ``{{lastExportDateTime}}`` (the start of the last completed run that exported records, less ``lagOffset``).
 
       - First run: filters records changed since ``startDate``.
       - Subsequent runs: uses ``{{lastExportDateTime}}`` as the lower bound;
@@ -52,7 +55,7 @@ Delta:
       2. The system automatically maintains the checkpoint
           - No need to store or manage timestamps in your own code
           - A first run without ``startDate`` fetches nothing older than the run itself
-          - A run that exports records moves the checkpoint to its start time. The next run
+          - A run that completes having exported records moves the checkpoint to its start time. The next run
             reads from the checkpoint less ``lagOffset``, which is this run's
             {{currentExportDateTime}} while ``lagOffset`` is unchanged
           - Use {{lastExportDateTime}} as the lower bound. {{currentExportDateTime}} as the
@@ -61,14 +64,17 @@ Delta:
             never exported
 
       3. Error handling and recovery:
-          - If an export fails, the next run uses the last successful timestamp
-          - Records created/modified during a failed run will be included in the next run
+          - If an export fails, the next run reuses the last checkpoint
+          - An HTTP export that fails on a later page request, after earlier pages have exported
+            records, leaves the checkpoint too: the next run sends the same {{lastExportDateTime}}
+            with its own start as the upper bound, so no backfill run is needed
           - A run that exports nothing leaves the checkpoint where it was, so after a stretch of
             empty runs the next run that finds records reaches back to the last run that exported
             any: once the cause is fixed, no backfill run is needed
           - A run given its own window (export.startDate / export.endDate on
-            POST /v1/flows/{_id}/run) that exports records leaves the checkpoint at endDate,
-            even a past one, so the next run re-reads everything after it
+            POST /v1/flows/{_id}/run) that completes having exported records leaves the
+            checkpoint at endDate, even a past one, so the next run re-reads everything after it;
+            one whose HTTP export failed on a later page request left the checkpoint where it was
           - ``lagOffset`` delays every window by its value, for a source that shows changes late
     - |-
       Omit this object for export types other than "delta". An HTTP export with type
@@ -76,6 +82,14 @@ Delta:
       set ``startDate`` anyway: without it the first run's window is empty.
       Delta exports are designed for efficient synchronization by retrieving only
       records that have been created or modified since the last execution.
+    - |-
+      Verified live (2026-11-20, an HTTP delta export whose second page request was answered
+      with HTTP 500 after the first page had exported a record): the export job and the flow
+      job ended `failed` and `GET /v1/flows/{_id}/lastExportDateTime` was unchanged; the next
+      run sent the same {{lastExportDateTime}} as the failed run and, completing, moved the
+      checkpoint to its own start. The same failure on a flow's first run left the checkpoint
+      `null`, and the next run sent `startDate` again. On a run given `export.startDate` /
+      `export.endDate` it left the checkpoint where it was, not at `endDate`.
   properties:
     dateField:
       type: string
@@ -86,8 +100,8 @@ Delta:
         required:true, visibleWhen type=delta). Encoded to mirror the form so builders produce
         connectable configurations.
       description: |-
-        Record timestamp field(s) compared against the last successful run time to identify
-        changed records. Accepts a single field or multiple comma-separated fields, processed
+        Record timestamp field(s) compared against the flow's checkpoint, {{lastExportDateTime}},
+        to identify changed records. Accepts a single field or multiple comma-separated fields, processed
         sequentially — useful when different operations update different timestamp fields.
         If the flow's own downstream steps update the exported records, add export criteria
         that exclude already-processed records (or use a creation-time field for process-once
@@ -103,8 +117,8 @@ Delta:
         - |-
           ## FIELD BEHAVIOR
 
-          This field determines which record timestamp(s) are compared against the last successful run time
-          to identify changed records. Key characteristics:
+          This field determines which record timestamp(s) are compared against the flow's checkpoint
+          (``{{lastExportDateTime}}``) to identify changed records. Key characteristics:
 
           - REQUIRED for most adapter types (except HTTP and REST where this field is not supported)
           - Can reference a single field or multiple comma-separated fields
@@ -236,9 +250,9 @@ Delta:
       type: integer
       description: |-
         Milliseconds taken off a run's start time to give `{{currentExportDateTime}}`, the window's
-        upper bound, and off the flow's checkpoint, the start time of the last run that exported
-        records, to give `{{lastExportDateTime}}`, its lower bound. Until a run has exported records
-        there is no checkpoint, and the lower bound is `startDate` itself, unshifted, so a
+        upper bound, and off the flow's checkpoint, the start time of the last completed run that
+        exported records, to give `{{lastExportDateTime}}`, its lower bound. Until a run has
+        completed with exported records there is no checkpoint, and the lower bound is `startDate` itself, unshifted, so a
         `startDate` within the last `lagOffset` gives the run an empty window. While the value stays the same, windows stay back to back and nothing is read twice:
         each record just reaches a run `lagOffset` later, after it has had that long to become
         visible. Changing it moves the next window's start by the change: raising it re-reads the
@@ -270,10 +284,10 @@ Delta:
       type: [string, 'null']
       format: date-time
       description: |-
-        Lower-bound cutoff for the first run, and for every run until one exports records. Omitting it doesn't export history: the first run
+        Lower-bound cutoff for the first run, and for every run until one completes having exported records. Omitting it doesn't export history: the first run
         then starts at its own timestamp, an empty window. Set it to the earliest change the first
-        run should pick up. Later runs start from the flow's checkpoint, the start of the last run
-        that exported records (less `lagOffset`).
+        run should pick up. Later runs start from the flow's checkpoint, the start of the last
+        completed run that exported records (less `lagOffset`).
       x-celigo-ai-guidance:
         - |-
           Initial cutoff timestamp for the first export run, in ISO-8601 UTC format (e.g.
@@ -291,10 +305,11 @@ Delta:
           flow is being authored.
         - |-
           ## SUBSEQUENT RUNS
-          After the first run that exports records, the platform keeps the
-          flow's checkpoint at the start of the last run that exported records
+          After the first run that completes having exported records, the platform keeps the
+          flow's checkpoint at the start of the last completed run that exported records
           and exposes it, less ``lagOffset``, as ``{{lastExportDateTime}}``; runs that export
-          nothing leave it unchanged. ``startDate`` becomes the floor used
+          nothing leave it unchanged, and so did a run whose HTTP export failed on a later page
+          request after an earlier page had exported a record. ``startDate`` becomes the floor used
           only when the platform timestamp is absent (e.g. after a reset).
         - |-
           ## EXAMPLES

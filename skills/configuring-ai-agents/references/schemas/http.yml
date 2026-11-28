@@ -5,6 +5,8 @@ Http:
     Required whenever the connection referenced by _connectionId has type http, and on
     `NetSuiteHTTPImport` (NetSuite's REST APIs on a `netsuite` connection, where `nsDomainType`
     supplies the host).
+    `ignoreExisting`, `ignoreMissing` and `ignoreExtract` are import-level fields; copies sent
+    inside this object are dropped without an error, so nothing is skipped.
   x-celigo-ai-guidance:
     - |-
       IMPORTANT:
@@ -22,7 +24,14 @@ Http:
       type: boolean
       default: true
       description: |-
-        When true, the request body is the record as reshaped by the import's mapping step. When false, the original pre-mapped record is sent instead, bypassing the mappings for the payload.
+        When true, an import with no `body` template sends the record as the request body — as its mapping step leaves it, or unchanged when the import has no mapping. When false, an import with no `body` template sends its request with no body. A `body` template is rendered against the mapped record under either value.
+      x-celigo-ai-guidance:
+        - |-
+          Leave this ``true`` (the default) on an import that sends its record: ``false`` does
+          not send the record as it was before mapping. Live-verified 2026-11-13 on HTTP imports
+          under Mapper 2.0 and Mapper 1.0: with no ``body`` template, ``false`` sent an empty
+          request body with a mapping and without one; with a ``body`` template the request was
+          the same under ``true`` and ``false``.
     isRest:
       type: boolean
       description: |-
@@ -446,6 +455,9 @@ Http:
         entry means no template for the method at that position. Each entry is a string:
         write a JSON body as a template string (`["{\"id\": \"{{record.id}}\"}"]`), not as
         a JSON object, because an object entry does not render as JSON at runtime.
+        An entry that is not a string or `null` fails the save
+        with 422 `invalid_http_body` ("http.body.<index> must be a Handlebars template
+        string."; `rest.body.<index>` on a REST-form import).
         Leave undefined for standard imports — the Import's mapping step transforms the source record and the mapped data is sent as the request body automatically.
         Set it only when the target API requires XML, SOAP, or a custom structure that mappings cannot produce, or when the user explicitly specifies a request body.
         When set, the mapping step still runs first and the template renders against the post-mapped record — use `{{record.<mappedField>}}` to reference mapping outputs.
@@ -566,8 +578,9 @@ Http:
           a serialized batch.  The template root depends ONLY on
           ``batchSize`` (live-verified 2026-09-10): with ``batchSize`` 1
           (the default) the root carries ``record`` (an object record —
-          or the fanned-out child on a ``oneToMany`` import) or ``rows``
-          (a grouped/array record), and ``data`` is the one-element list
+          or an object child fanned out by ``oneToMany``) or ``rows``
+          (a grouped/array record, including a fanned-out child that is
+          itself an array), and ``data`` is the one-element list
           of records in the request (a grouped record is that element,
           itself an array); with ``batchSize`` > 1 the root carries
           ``batch_of_records`` (one ``{record: …}`` item per object
@@ -1263,6 +1276,11 @@ Http:
 
           - **Static** — only ``map`` + optional ``default``.  No HTTP
             request issued.  Use for small controlled vocabularies.
+            Never add a ``map`` to a working request lookup: an entry that
+            carries both saves without error, but only the map is used and
+            the request is never sent, so every value the map lacks is a
+            miss (``default``, or ``lookup_error`` under
+            ``allowFailures: false``) instead of the looked-up value.
           - **Dynamic** — ``method`` + ``relativeURI`` (+ ``body``,
             ``headers``, ``extract``).  Issues a live HTTP request per
             lookup.  Adds one HTTP request per record at runtime — factor
@@ -1363,35 +1381,47 @@ Http:
           map:
             type: [object, 'null']
             description: |
-              Optional static key→value object evaluated BEFORE the HTTP
-              request. When the incoming value matches a key, the mapped
-              value is returned without hitting the remote endpoint. Null
-              on dynamic lookups with no static map.
+              Static key→value table. A lookup whose ``map`` holds any entry
+              is static: a matching value returns the mapped value and any
+              other value is a miss settled by ``default`` and
+              ``allowFailures``, with no HTTP request — ``method``,
+              ``relativeURI`` and ``extract`` saved beside it are never sent.
+              Omit it on a request lookup; ``null`` is stored as sent and
+              ``{}`` is dropped on save, and either way the request runs.
           default:
             type: [string, 'null']
             description: |
               Value written when the lookup finds no match and the miss is
               allowed (``allowFailures`` true, or omitted on a static
-              ``map``). A save refuses a ``default`` together with an
-              explicit ``allowFailures: false`` (422 "Lookups with default
-              set can not have allowFailures explicitly set to false."), so
-              a lookup either fails a miss (``allowFailures: false``, no
-              default) or falls back to its default. Stored as null when no
-              fallback is configured.
+              ``map``). A save refuses a non-empty ``default`` together with
+              an explicit ``allowFailures: false`` (422 "Lookups with default
+              set can not have allowFailures explicitly set to false.").
+              ``allowFailures: false`` fails the miss even when ``""`` or
+              ``null`` is stored (a static map: ``lookup_error``, nothing
+              written); the default is used only on an allowed miss. ``""``,
+              ``null`` and an absent key are three stored states — the
+              mapper's *Use empty string as default value*, *Use null as
+              default value* and *Do nothing* — kept apart on save and read
+              back as written; on an allowed miss of a static map they write
+              ``""``, write ``null``, or leave the field out.
             x-celigo-ai-guidance:
               - >-
                 Omit this field entirely when no fallback value is
                 intended. An empty string is a value, not "no default":
-                the save accepts `default: ""`, and a miss the lookup lets
-                through writes `""`.
+                the save accepts `default: ""`, and an allowed miss of a
+                static map writes `""`. On an update, carry a stored `""`
+                or `null` through unchanged: it is the user's choice, and
+                on an allowed miss of a static map dropping it turns a
+                written `""` / `null` into an omitted field.
               - >-
-                A default raises no error: every unmatched value goes out
-                as the default with a 200. Set one only when a single
-                fallback is right for every value the lookup can't match;
-                when a miss must stop the record, set allowFailures: false
-                and leave the default out. An ambiguous answer (two or
-                more matches) doesn't use the default either: see
-                useDefaultOnMultipleMatches.
+                On an allowed miss (allowFailures true, or omitted on a static
+                map) a default raises no error: every unmatched value goes out as the
+                default with a 200. Set one only when a single fallback is
+                right for every value the lookup can't match; when a miss
+                must stop the record, set allowFailures: false — a stored
+                `""` or `null` may stay, a non-empty default cannot. An
+                ambiguous answer (two or more matches) doesn't use the
+                default either: see useDefaultOnMultipleMatches.
           allowFailures:
             type: [boolean, 'null']
             description: |

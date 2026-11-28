@@ -12,13 +12,19 @@ MCPServerBase:
       examples: ["Customer Integration MCP", "Order Processing Server"]
     relativeURI:
       type: string
-      maxLength: 131072
+      maxLength: 128
       pattern: "^\\/[a-zA-Z0-9_\\-]+$"
       description: |-
-        URI path segment for the MCP server endpoint. Must be unique per account —
+        URI path segment for the MCP server endpoint: MCP clients reach the server at
+        `/mcp/{accountAlias}{relativeURI}` (`accountAlias` is an account setting), and with an
+        API token it also answers at `/mcp{relativeURI}`. Must be unique per account —
         duplicates are rejected with 422 `mcp_server_duplicate_relative_uri`. Only letters,
         numbers, dashes, and underscores after the leading slash (the server's error message
-        also claims colons and dots are allowed, but they are rejected in practice). Creation
+        also claims colons and dots are allowed, but they are rejected in practice). The
+        length limit counts the leading slash; a longer value is rejected with 422
+        `mcp_server_relative_uri_too_long`. `/registry`, `/oidc`, and `/portal`, in any letter
+        case, are reserved for platform endpoints under the account alias and are rejected
+        with 422 `mcp_server_reserved_relative_uri`. PUT applies both checks too. Creation
         also requires the account to have an account alias set (422
         `mcp_server_account_alias_required` otherwise).
       x-celigo-ai-guidance:
@@ -39,33 +45,83 @@ MCPServerBase:
       examples: ["Exposes customer management tools for AI agent consumption"]
     disabled:
       type: boolean
-      default: true
+      default: false
       description: |-
-        When true, the server refuses MCP clients. New servers start disabled.
-        Enabling requires at least one enabled tool, API, resource, or prompt,
-        or one enabled and available upstream capability — otherwise the write
-        is rejected with 422 `mcp_server_enablement_requires_enabled_item`.
+        When true, the server refuses MCP clients: on the alias URL
+        (`/mcp/{accountAlias}{relativeURI}`) a disabled or deleted server, a
+        `relativeURI` no server has, or an unknown alias answers HTTP 404
+        `resource_not_found` with no `WWW-Authenticate` header, whatever
+        credential is sent, while the direct `/mcp{relativeURI}` route still
+        authenticates the call and then returns JSON-RPC error `1006` ("MCP
+        Server not found for relativeURI: …"). A new server is created enabled
+        with `enabledItemCount` 0: it answers `initialize` on both URLs but
+        lists no tools, prompts, or resources until an item is enabled.
+        The `false` default applies to a create only: a PUT that omits
+        `disabled` stores `true`, which disables a server that was enabled.
       x-celigo-ai-guidance:
         - |-
-          Enable the items first, then the server: a PUT or PATCH that sets
-          disabled to false while every item is disabled fails with 422
-          "mcp_server_enablement_requires_enabled_item".
+          Create the server with its items enabled, or enable them right after: a server
+          saved with disabled false and no enabled item is reachable but returns an empty
+          tools, prompts, and resources list to every client.
+        - |-
+          Send disabled on every PUT. A PUT is a full replacement and one that leaves disabled
+          out stores disabled true (200), so an enabled server stops answering MCP clients
+          until a later write sets it back to false.
       examples: [false, true]
     connections:
       type: array
       description: |-
-        Connections the server's tools run through, each flagged for whether
-        end users must supply their own credentials. Always returned — an
-        empty array when none is listed — and cleared when omitted on PUT.
-        Together with `tools[].overrides.connections[]` this is the set
+        Connections each end user must supply their own credentials for. Only
+        entries with `requiresEndUserCredentials: true` are kept — any other
+        entry is validated, then dropped on save. Always returned (an empty
+        array when none is listed) and cleared when omitted on PUT; together
+        with `tools[].overrides.connections[]` it forms the set
         `GET /v1/mcpservers/{_id}/connections` reports.
+      x-celigo-ai-guidance:
+        - |-
+          List a connection here only to make each end user supply their own credentials
+          for it, with requiresEndUserCredentials set to true. A connection the tools run on
+          the account's own credentials needs no entry: an entry sent with the flag false
+          still gets 201/200, but it is absent from the response and from every later
+          GET — do not resend it.
       items:
         $ref: "./server-connection.yml#/ServerConnection"
+    showInPublicRegistry:
+      type: boolean
+      default: false
+      description: |-
+        When true, this server is published: while it is enabled and the
+        account's registry is public (**Make the registry public**, under
+        Account > Company > AI settings in integrator.io), the account's
+        MCP registry returns it on its public-listing lane, where a
+        caller needs neither a credential nor an entitlement to the
+        server to be shown it. The registry's operations state the result
+        for each kind of caller, an invalid bearer's `401` included. On an
+        account whose registry is not public the value is stored and has
+        no effect: a caller with no credential receives `401` from the
+        registry. Always returned, including
+        on servers that never set it. Must be a JSON boolean; any other
+        value returns `422` `invalid_request` ("showInPublicRegistry must be
+        a boolean.").
+        Changing the value requires the server to be enabled both before
+        and after the write, so create with `true` also needs
+        `disabled: false`; otherwise the call returns `422`
+        `invalid_request` ("showInPublicRegistry can only be set on an
+        enabled MCP server."). Disabling a published server without
+        changing this field is allowed: the registry stops listing it
+        and lists it again when it is enabled. A PUT that omits the field
+        keeps the stored value. Writable through PATCH at
+        `/showInPublicRegistry`.
+      examples: [false, true]
     tools:
       type: array
       description: |-
         Tool entries referencing Celigo Tool resources. Duplicate `_toolId`
         values are rejected. Names must be unique across both `tools` and `apis`.
+        Every `tools/call` through the server hands the Tool a caller `context`
+        (`token`, `byUser`, `source`, `client` — see `context` on
+        `POST /v1/tools/{_id}/invoke`) that its steps read as `{{context.*}}`;
+        APIs on the server and proxied upstream capabilities get none.
       x-celigo-ai-guidance:
         - |-
           Tool entries reference Celigo Tool resources;
@@ -94,9 +150,10 @@ MCPServerBase:
       description: |-
         Files from Celigo Storage exposed to MCP clients as MCP resources.
         Each entry references a storage file by `_fileId`; the same file can
-        appear only once. Always returned in responses — servers created
-        before resource support return an empty array. Not supported on
-        sandbox servers.
+        appear only once, and a server holds at most 100 (a larger array is
+        refused with 422 `resource_invalid`). Always returned in responses —
+        servers created before resource support return an empty array. Not
+        supported on sandbox servers.
       x-celigo-ai-guidance:
         - |-
           Each resource exposes a Celigo Storage file to MCP clients.
@@ -123,13 +180,14 @@ MCPServerBase:
     permissionSets:
       type: array
       description: |-
-        Named bundles of this server's tools and APIs — shown as "Capability
-        Sets" in the UI — granted to end users as a unit via `pset:<_id>`
-        capability strings. Omitting the field on PUT resets it to an empty
-        array, erasing every set and rewriting the grants that reference
-        them — always send the complete array back. Absent from responses for
-        servers not saved since permission sets were introduced (unlike
-        `resources`, the field is not normalized to an empty array).
+        Named bundles of this server's tools, APIs, prompts, and file
+        resources — shown as "Capability Sets" in the UI — granted to end
+        users as a unit via `pset:<_id>` capability strings. Omitting the
+        field on PUT resets it to an empty array, erasing every set and
+        rewriting the grants that reference them — always send the complete
+        array back. Absent from responses for servers not saved since
+        permission sets were introduced (unlike `resources`, the field is not
+        normalized to an empty array).
       x-celigo-ai-guidance:
         - |-
           Not editable via PATCH (/permissionSets is not a whitelisted path).
@@ -181,5 +239,73 @@ MCPServerBase:
           document, PATCH `replace /policies` with the complete array.
       items:
         $ref: "./policy.yml#/Policy"
+    logging:
+      type: object
+      description: |-
+        How much of each MCP request this server keeps in its request log
+        (`GET /v1/mcpservers/{_id}/logs`). Every request is recorded as a
+        log entry — method, outcome, timing, caller and the capability it
+        targeted — whatever the mode. The mode decides two further things:
+        whether the request and response payload is stored (the entry's
+        `hasPayload`, payload only), and how much execution detail a Celigo
+        Tool call's run keeps — the run trace itself is reached through the
+        entry's non-empty `invocationId`, not through `hasPayload`. New
+        servers are created with `{"mode": "basic"}`. Changed with
+        `PATCH /v1/mcpservers/{_id}` on the `/logging/mode` and
+        `/logging/debugUntil` paths, or by sending the object on PUT;
+        omitted on PUT, the stored value is kept, while `logging: {}` or
+        `null` on PUT (or PATCH `remove /logging/mode`) clears it, after
+        which the field is absent from responses and requests are recorded
+        as entries only. A change applies to the
+        requests that follow it, not to entries already recorded. While
+        payload storage is off for the account, requests are recorded as
+        entries only whatever the stored mode.
+      x-celigo-ai-guidance:
+        - |-
+          Leave logging out of a create: the server stores mode basic. To change it
+          later, PATCH replace /logging/mode — the whole /logging object is not a
+          whitelisted path. While payload storage is off for the account, standard
+          and detailed fail with 422 "payload_storage_required" and any debugUntil
+          with 422 "not_allowed"; noLogging and basic save without it.
+      properties:
+        mode:
+          type: string
+          enum: [noLogging, basic, standard, detailed]
+          x-enumDescriptions:
+            noLogging: Record the request entry only; no request or response payload is stored
+            basic: Store the request and response payloads of errored requests only
+            standard: Store the request and response payloads of every request
+            detailed: Store every request and response payload together with the full execution detail of each Celigo Tool call
+          description: |-
+            Capture level for the requests this server handles. `standard`
+            and `detailed` need payload storage enabled for the account;
+            without it the write is rejected with 422
+            `payload_storage_required`. `basic` is accepted while payload
+            storage is off and stores entries only until it is on. Values
+            are case-sensitive — any other spelling is rejected with 422
+            `invalid_logging_mode`.
+            When the account's plan changes to one with a lower logging
+            ceiling, a stored mode above it is lowered by the platform (the
+            `standard` level counts as `basic` for that ceiling).
+          examples: ["standard"]
+        debugUntil:
+          type: string
+          format: date-time
+          description: |-
+            While this timestamp is in the future, every request is captured
+            with full payloads and execution detail regardless of `mode`;
+            once it passes, the stored `mode` applies again without any
+            further write (the past value stays in responses until removed
+            or replaced). The value must lie in the future (422
+            `invalid_date`), at most the license's `logging.maxDebugDuration`
+            minutes ahead (422 `not_allowed`, "As per your license, you can
+            only set debug duration up to N hours"), and be a date-time (422
+            `invalid_field`); payload storage must be on for the account
+            (422 `not_allowed`, "…as payload storage is not enabled"). A
+            window longer than a new plan allows is cleared by the platform
+            when the plan changes. Clear an active window with a PATCH
+            `remove` — removing it when none is set is accepted and changes
+            nothing. Absent from responses when no window has been set.
+          examples: ["2026-10-27T09:30:00.000Z"]
     oauth:
       $ref: "./oauth-config.yml#/OAuthConfig"

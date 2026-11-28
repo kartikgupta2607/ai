@@ -1,19 +1,21 @@
 # Guardrail-owned contract for the `guardrail` object. It mirrors the import spec's
-# GuardrailConfig field for field with one deliberate difference: the AI-agent branch
-# (GuardrailAiAgentConfig, below) is composed without the `tools` arrays that the server
-# rejects on guardrails, instead of $ref-ing the tool-bearing AiAgentConfig. Keep the shared
-# fields (type, confidenceThreshold, pii, moderation, and the provider blocks) in step with
-# specs/v1/import/components/schemas/{guardrail,aiagent}.yml when either side changes.
+# GuardrailConfig field for field. Its AI-agent branch (GuardrailAiAgentConfig, below) is a copy
+# of the tool-bearing AiAgentConfig with two deliberate differences: it has no `tools` arrays,
+# which the server rejects on guardrails, and its Gemini `thinkingConfig`, which a guardrail's
+# run never sends, says so and carries no model-family rule (see its canon record). Keep the
+# shared fields (type, confidenceThreshold, pii, moderation, and the provider blocks) in step
+# with specs/v1/import/components/schemas/{guardrail,aiagent}.yml when either side changes.
 GuardrailConfig:
   type: object
   description: |-
     Selects the check a guardrail applies and carries its settings. `type` picks the check
     and the matching sub-object (`pii`, `moderation`, or `aiAgent`) configures it.
-    Responses echo the active sub-object with `confidenceThreshold` defaulted and also
-    return the inactive `pii` / `moderation` siblings as empty stubs
-    (`pii: {entities: [], mask: false}`, `moderation: {categories: []}`) — only the active
-    type's sub-object is meaningful. Guardrails created before the AI-agent stub was
-    stripped on write may still return an inert `aiAgent` on `pii` / `moderation` guardrails.
+    Responses echo the active sub-object with `confidenceThreshold` defaulted. A save keeps
+    only the active type's sub-object, so switching `type` on PUT removes the previous
+    type's block. A guardrail last saved before that rule may still return the inactive
+    siblings — empty stubs (`pii: {entities: [], mask: false}`,
+    `moderation: {categories: []}`) or an inert `aiAgent` on a `pii` / `moderation`
+    guardrail; only the active type's sub-object is meaningful.
   x-celigo-ai-guidance:
     - |-
       Pick exactly one type. Prefer the deterministic local classifiers (`pii`, then
@@ -366,8 +368,10 @@ GuardrailAiAgentConfig:
       - **openai**: OpenAI models (GPT-4.1, GPT-5, etc.). Configure via the `openai` object.
       - **gemini**: Google Gemini models via the LiteLLM proxy. Configure via `litellm` with overrides in `litellm._overrides.gemini`.
       - **anthropic**: Anthropic Claude models via the LiteLLM proxy. Configure via `litellm` with overrides in `litellm._overrides.anthropic`.
-    - **Catalog providers** — `mistral`, `xai`, `huggingface`, `deepseek`, `cohere`, `groq`. Added
-      as catalog data rather than platform code, they share one generic flat format:
+    - **Catalog providers** — every other value of `provider` (Mistral, xAI, Hugging Face,
+      DeepSeek, Cohere, Groq, Together AI, Azure OpenAI, Fireworks AI, AWS Bedrock, NVIDIA NIM,
+      Ollama Cloud and Google Vertex AI today; the catalog grows without a platform release).
+      Added as catalog data rather than platform code, they share one generic flat format:
       `model`, `modelOptions`, `instructions`, `output`, and the `prompts` / `resources`
       arrays directly on this object.
 
@@ -408,27 +412,37 @@ GuardrailAiAgentConfig:
   properties:
     provider:
       type: string
-      enum: ["openai", "gemini", "anthropic", "mistral", "xai", "huggingface", "deepseek", "cohere", "groq"]
+      enum: ["openai", "gemini", "anthropic", "mistral", "xai", "huggingface", "deepseek", "cohere", "groq", "together_ai", "azure_ai", "fireworks_ai", "bedrock", "nvidia_nim", "ollama_chat", "vertex_ai"]
       x-enumDescriptions:
-        openai: Use OpenAI models via the OpenAI Responses API (built-in; `openai` block).
-        gemini: Use Google Gemini models via the LiteLLM proxy (built-in; `litellm` block).
-        anthropic: Use Anthropic Claude models via the LiteLLM proxy (built-in; `litellm` block).
-        mistral: Use Mistral models (catalog provider; generic flat format, BYOK).
-        xai: Use xAI Grok models (catalog provider; generic flat format, BYOK).
-        huggingface: Use Hugging Face inference endpoint models (catalog provider; generic flat format, BYOK).
-        deepseek: Use DeepSeek models (catalog provider; generic flat format, BYOK).
-        cohere: Use Cohere models (catalog provider; generic flat format, BYOK).
-        groq: Use Groq-hosted models (catalog provider; generic flat format, BYOK).
-      description: AI provider to use.
+        openai: Use OpenAI models via the OpenAI Responses API (built-in; `openai` block; Celigo AI or BYOK)
+        gemini: Use Google Gemini models via the LiteLLM proxy (built-in; `litellm` block; Celigo AI or BYOK)
+        anthropic: Use Anthropic Claude models via the LiteLLM proxy (built-in; `litellm` block; Celigo AI or BYOK)
+        mistral: Use Mistral models (catalog provider; generic flat format, BYOK)
+        xai: Use xAI Grok models (catalog provider; generic flat format, BYOK)
+        huggingface: Use Hugging Face inference endpoint models (catalog provider; generic flat format, BYOK)
+        deepseek: Use DeepSeek models (catalog provider; generic flat format, BYOK)
+        cohere: Use Cohere models (catalog provider; generic flat format, BYOK)
+        groq: Use Groq-hosted models (catalog provider; generic flat format, BYOK)
+        together_ai: Use models served by Together AI (catalog provider; generic flat format, BYOK)
+        azure_ai: Use deployments on an Azure AI Foundry / Azure OpenAI resource — `model` is the deployment name (catalog provider; generic flat format, BYOK)
+        fireworks_ai: Use models served by Fireworks AI (catalog provider; generic flat format, BYOK)
+        bedrock: Use AWS Bedrock models through cross-region inference profile ids such as `global.anthropic.claude-sonnet-4-6` (catalog provider; generic flat format, BYOK)
+        nvidia_nim: Use models served by NVIDIA NIM (catalog provider; generic flat format, BYOK)
+        ollama_chat: Use models served by Ollama Cloud (catalog provider; generic flat format, BYOK)
+        vertex_ai: Use Gemini models on Google Vertex AI with the customer's own GCP project (catalog provider; generic flat format, BYOK)
+      description: |-
+        AI provider to use. Built-in providers run on Celigo AI credentials or on a
+        BYOK connection; every other provider is a catalog row that runs only on a BYOK
+        connection. The catalog is data — a provider can be added without a platform
+        release, and `GET /api/aiproviders` lists the rows currently offered.
       x-celigo-ai-guidance:
         - |-
           The provider decides the configuration format, and the server rejects a
           mismatch with 422 `invalid_provider_config_format`: `openai` needs the
           `openai` block, `gemini` and `anthropic` need the `litellm` block (Gemini- or
-          Claude-specific settings under `litellm._overrides`), and the catalog
-          providers (`mistral`, `xai`, `huggingface`, `deepseek`, `cohere`, `groq`) need the
-          generic flat format — `model` and `modelOptions` directly on this object,
-          never an `openai` or `litellm` block.
+          Claude-specific settings under `litellm._overrides`), and every other
+          provider (the catalog providers) needs the generic flat format — `model` and
+          `modelOptions` directly on this object, never an `openai` or `litellm` block.
         - |-
           Catalog providers are BYOK-only, and the save enforces it through the model
           catalog: without a `_connectionId` the guardrail fails to save with 422
@@ -437,6 +451,18 @@ GuardrailAiAgentConfig:
           configuration.") — the model is a catalog row that is not offered on
           platform-managed credentials. Attach an HTTP connection to the vendor's API
           (token auth) before saving a catalog-provider guardrail.
+        - |-
+          Without a connection, a provider the catalog does not list is refused at the
+          model check — 422 `ai_model_not_in_catalog` on `guardrail.aiAgent.model` — so the
+          message names the model, not the provider. Check the provider against the
+          catalog before blaming the model.
+        - |-
+          For `azure_ai` and `bedrock` the vendor-specific settings ride the BYOK
+          connection, not this object: an optional connection `baseURI` (the vendor
+          endpoint the connector asks for), and connection settings forwarded to the
+          vendor — Azure's `apiVersion`, Bedrock's `awsRegionName`. `bedrock`
+          authenticates with a Bedrock API key (no IAM role); for `azure_ai`, `model` is
+          the deployment name.
     model:
       type: string
       description: |-
@@ -576,6 +602,43 @@ GuardrailAiAgentConfig:
           the array index.
     resources:
       $ref: '../schemas/aiagent.yml#/McpResources'
+    attachedKnowledgeBaseIds:
+      # Knowledge Fabric (integrator-models#4198, #4216). Live on production (2026-11-06): a real
+      # knowledge base attaches on POST/PUT and reads back on GET. Unlike the AI agent import, a
+      # guardrail create without the list stores nothing (no `default: []`). The PATCH rows live in
+      # import/paths/by-id.yml.
+      type: array
+      maxItems: 50
+      uniqueItems: true
+      description: |-
+        Knowledge bases the guardrail's model retrieves from, for every provider. Present only once
+        set: a guardrail created without the list has no field, and a PATCH `remove`, or a PUT
+        that omits the list or sends `null`, drops it again. A PUT stores exactly the list its body
+        carries — duplicate ids collapse to their first occurrence, and `[]` detaches every
+        knowledge base.
+      items:
+        type: string
+        format: objectId
+        x-celigo-refModel: knowledgebases
+      x-celigo-ai-guidance:
+        - |-
+          Every id must be a knowledge base in this environment (`GET /v1/knowledgebases`):
+          any other value — a malformed string or the id of another resource — fails the save
+          with 422 `attached_knowledge_base_invalid` naming the ids, and more than 50 distinct
+          ids fails with 422 `invalid_field` on `guardrail.aiAgent.attachedKnowledgeBaseIds`
+          (the message names `aiAgent.attachedKnowledgeBaseIds`).
+        - |-
+          A PUT that leaves the field out detaches every knowledge base, exactly like `[]` or
+          `null`: when a PUT changes anything else on the guardrail, send the list back as it was
+          read.
+        - |-
+          To change the list alone use `PATCH /v1/imports/{_id}`: `replace` on
+          `/guardrail/aiAgent/attachedKnowledgeBaseIds` with the complete list (`[]` detaches
+          all) works whether or not the field exists. `add` at
+          `/guardrail/aiAgent/attachedKnowledgeBaseIds/-` appends one id only where the field
+          exists — on a guardrail without it the request fails with 422
+          ("guardrail.aiAgent.attachedKnowledgeBaseIds is not an array") — and `remove` at an
+          array index fails with 422.
     openai:
       type: object
       description: |
@@ -859,7 +922,7 @@ GuardrailAiAgentConfig:
           description: |-
             LiteLLM model identifier. For Gemini, models are stored without the `gemini/`
             prefix; for Anthropic, use the Claude model id (e.g. `claude-sonnet-4-6`).
-          examples: ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite", "claude-sonnet-4-6", "claude-opus-4-7"]
+          examples: ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite", "claude-sonnet-4-6", "claude-opus-4-7"]
           x-celigo-ui-override: >-
             Required by the AI agent configuration form. Encoded here to mirror the form so
             builders produce connectable configurations.
@@ -870,11 +933,13 @@ GuardrailAiAgentConfig:
               provider on its own credentials — Gemini and Anthropic Claude each have
               their own rows. The save checks this: a model that is not in the catalog
               fails with 422 `ai_model_not_in_catalog` on
-              `guardrail.aiAgent.litellm.model`, a retired one with `ai_model_retired`
-              (the message names the retirement date and, when any remain eligible, the
-              suggested next models), a switched-off one with `ai_model_disabled`; a
-              deprecated model saves. Never
-              swap the model on the user's behalf — relay the message and let them choose.
+              `guardrail.aiAgent.litellm.model`, a row offered only with a BYOK
+              connection (the Gemini 3 image models `gemini-3.1-flash-image` and
+              `gemini-3-pro-image`) with `ai_model_not_available`, a retired one with
+              `ai_model_retired` (the message names the retirement date and, when any
+              remain eligible, the suggested next models), a switched-off one with
+              `ai_model_disabled`; a deprecated model saves. Never swap the model on the
+              user's behalf — relay the message and let them choose.
             - |-
               With a `_connectionId` (BYOK) a model the catalog does not list is passed
               through to the provider as-is; a catalog-listed model is still governed by
@@ -1057,15 +1122,17 @@ GuardrailAiAgentConfig:
                   description: Top-K sampling parameter for Gemini
                 thinkingConfig:
                   type: object
-                  description: Controls Gemini's extended thinking capabilities
+                  description: |-
+                    Saved with the guardrail but not sent to the model: a guardrail's run passes no
+                    thinking settings, so the model's default thinking applies whatever this holds.
                   x-celigo-ai-guidance:
                     - |-
-                      Supported on reasoning-capable Gemini models only (currently `gemini-2.5-pro`
-                      and `gemini-2.5-flash`).
-                      Setting `thinkingConfig` on a non-thinking model (e.g.
-                      `gemini-2.5-flash-lite`,
-                      `gemini-2.5-flash-image`) is rejected by the provider at runtime — omit the
-                      field on those models.
+                      Omit the field on a guardrail. Its run never sends it (a `thinkingLevel` on a
+                      Gemini 2.5 model, which fails an AI agent's run, does not fail a guardrail's),
+                      but the save still checks it: `thinkingBudget` together with `thinkingLevel`
+                      fails with 422 `invalid_thinking_config`.
+                  not:
+                    required: [thinkingBudget, thinkingLevel]
                   properties:
                     includeThoughts:
                       type: boolean
@@ -1263,7 +1330,7 @@ GuardrailAiAgentConfig:
       if:
         properties:
           provider:
-            enum: [mistral, xai, huggingface, deepseek, cohere, groq]
+            enum: [mistral, xai, huggingface, deepseek, cohere, groq, together_ai, azure_ai, fireworks_ai, bedrock, nvidia_nim, ollama_chat, vertex_ai]
         required: [provider]
       then:
         required: [model]
