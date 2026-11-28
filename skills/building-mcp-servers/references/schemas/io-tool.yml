@@ -26,7 +26,8 @@ IOTool:
       pattern: "^[A-Za-z0-9_\\-.]+$"
       description: |-
         MCP tool name exposed to clients. Must be unique across all tools
-        and APIs within this server.
+        and APIs within this server. Duplicate names return 422
+        `mcp_server_duplicate_item_name`.
       x-celigo-ai-guidance:
         - |-
           Must be unique across all tools and APIs within this MCP server.
@@ -36,13 +37,16 @@ IOTool:
     disabled:
       type: boolean
       default: true
-      description: When true, this tool is disabled and will not be exposed to MCP clients.
+      description: |-
+        When true, this tool is disabled and will not be exposed to MCP clients:
+        `tools/list` leaves it out, and a `tools/call` that still names it gets
+        JSON-RPC error -32601 ("Tool not found: …") with `error.data.hint`
+        `refresh_tools_list`, the same answer as for an unknown name.
       x-celigo-ai-guidance:
         - |-
-          Indicates whether this tool is disabled within the MCP server;
-          disabled tools are not exposed to MCP clients.
-          At least one tool, API, resource, or prompt must be enabled for the
-          server itself to be enabled.
+          Disabling an entry doesn't disable the server: with nothing else enabled, the
+          server stays enabled, answers `initialize`, and returns an empty `tools/list`.
+          The server's own `disabled` is the switch that turns the server off.
       examples: [false, true]
     annotations:
       $ref: "./annotations.yml#/Annotations"

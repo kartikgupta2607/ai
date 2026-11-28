@@ -274,6 +274,54 @@ OAuth:
       writeOnly: true
       examples:
         - dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk
+    # clientRegistration, registration, and grant live on the shared http.auth.oauth subdoc in the
+    # model, so http and mcp.http both carry them; only an mcp connection can save `automatic`.
+    clientRegistration:
+      type: string
+      enum: [automatic, preregistered]
+      x-enumDescriptions:
+        automatic: integrator.io registers itself with the MCP server's authorization server; no iClient is used.
+        preregistered: The OAuth client is the iClient referenced by the connection's `_iClientId`.
+      description: |-
+        How the OAuth client is obtained; unset behaves as `preregistered`. With `automatic` the
+        grant is always the authorization code flow (`grantType` is stored as `authorizecode`),
+        and client-sent `grantType`, `authURI`, `tokenURI`, `scope`, and `scopeDelimiter` are
+        dropped because the server discovers them. `automatic` is allowed only on an `mcp`
+        connection with no `mcp.http._iClientId`: on an `http` connection, or an MCP connection
+        that also sends an iClient, the save fails with 422 `mcp_client_registration_conflict`
+        ("Automatic client registration is only supported for standalone MCP connections without
+        an OAuth 2.0 client."). An update that omits it keeps the stored mode.
+      examples: ["automatic"]
+    # registration: live-verified 2026-11-14 on NA — absent on the POST response and on a GET before the
+    # authorization URL is requested, present right after `GET /v1/connection/{_id}/oauth2`.
+    registration:
+      type: object
+      readOnly: true
+      description: |-
+        Client registration discovered for an `automatic` connection. The server writes it,
+        together with the discovered `authURI`, `tokenURI`, `scope`, and `scopeDelimiter`, when
+        the authorization URL is requested (`GET /v1/connection/{_id}/oauth2`); a connection
+        that has only been saved carries none. A value sent on write is ignored.
+      properties:
+        method:
+          type: string
+          enum: [cimd]
+          x-enumDescriptions:
+            cimd: Client ID Metadata Document; the client id is a public URL and there is no client secret.
+          description: How integrator.io identifies itself to the MCP server's authorization server.
+          examples: ["cimd"]
+        issuer:
+          type: string
+          description: Issuer identifier the MCP server's authorization server publishes in its metadata.
+          examples: ["https://auth.example.com"]
+        issParameterSupported:
+          type: boolean
+          description: When true, the authorization server's metadata declares that it sends `iss` on authorization responses.
+          examples: [true]
+        clientId:
+          type: string
+          description: Metadata document URL sent as `client_id` in the authorization URL.
+          examples: ["https://integrator.io/oidc/mcp-client-metadata"]
   # Enforced via 422 on connection POST:
   # authorizecode requires authURI; clientcredentials requires tokenURI.
   # Conditional requireds by grantType — nested if/else-if (no allOf), stack-style.

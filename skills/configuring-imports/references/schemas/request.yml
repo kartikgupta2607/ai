@@ -13,7 +13,9 @@ Request:
     - $ref: './base.yml#/ImportBase'
   # _connectionId is waived for the connection-less flavors, recognized either by an explicit
   # adaptorType or by the presence of the flavor's config subdoc (the server infers the
-  # adaptorType from that subdoc when it is omitted). Every other import still requires it.
+  # adaptorType from that subdoc when it is omitted). `topic` counts only with its `_topicId`:
+  # a `topic` object without one and without an adaptorType is not read as a publisher, and the
+  # API asks for `_connectionId`. Every other import still requires it.
   if:
     anyOf:
       - required: [adaptorType]
@@ -24,19 +26,58 @@ Request:
       - required: [aiAgent]
       - required: [guardrail]
       - required: [topic]
+        properties:
+          topic:
+            required: [_topicId]
   then:
-    # Event Streams publisher: the API saves a TopicImport with an empty `topic` (batchSize
-    # default only); the topic binding is the form's rule.
+    # Event Streams publisher: the API refuses a TopicImport without topic._topicId
+    # (422 missing_required_field), with or without `topic`.
     if: { properties: { adaptorType: { const: TopicImport } }, required: [adaptorType] }
     then:
-      x-celigo-ui-override: >-
-        Required by the Event Streams publisher form (fieldDefinitions/resources/imports/import.js:
-        'topic._topicId' is required:true). Encoded to mirror the form so builders produce
-        publishers that are bound to a topic.
       required: [topic]
       properties:
         topic:
           required: [_topicId]
+    # AI agent code execution runs only on BYOK credentials: without a `_connectionId` the save
+    # succeeds but the agent fails when it runs.
+    else:
+      if:
+        not: { required: [_connectionId] }
+      then:
+        x-celigo-ui-override: >-
+          The AI agent form (forms/definitions/ai/aiAgent.js preSave, with the Add tools picker)
+          offers and keeps Code Execution only on a BYOK agent whose model metadata declares
+          supportsCodeExecution (a BYOK agent's existing tool also survives while that metadata
+          is unavailable), and strips it from a Celigo AI agent on save. Encoded to mirror the
+          form so builders produce agents that can run.
+        properties:
+          aiAgent:
+            properties:
+              openai:
+                properties:
+                  tools:
+                    items:
+                      properties:
+                        type:
+                          not: { const: code_execution }
+              litellm:
+                properties:
+                  _overrides:
+                    properties:
+                      gemini:
+                        properties:
+                          tools:
+                            items:
+                              properties:
+                                type:
+                                  not: { const: codeExecution }
+                      anthropic:
+                        properties:
+                          tools:
+                            items:
+                              properties:
+                                type:
+                                  not: { const: codeExecution }
   else:
     required: [_connectionId]
     # NetSuite REST APIs reuse the `http` object on a netsuite connection; `nsDomainType` picks

@@ -67,7 +67,7 @@ ExportBase:
         MongodbExport: Exports documents from MongoDB collections.
         DynamodbExport: Exports items from Amazon DynamoDB tables.
         WrapperExport: Exports data using a wrapper connector that delegates to another export.
-        SimpleExport: Exports data via manual file uploads through the data loader UI.
+        SimpleExport: Data loader source — parses a file that is uploaded when the flow is run; takes no connection and no adaptor config object.
         WebhookExport: Listens for incoming HTTP requests as a real-time event endpoint.
         FileSystemExport: Exports files from a local or mounted file system.
         TopicExport: Listens to an Event Streams topic and delivers its messages in batches, configured through `topic`; needs no connection.
@@ -123,11 +123,18 @@ ExportBase:
           `totalResults`. SuiteQL column names are the Records Catalog names (lowercase, e.g.
           `entityid`, `lastmodifieddate`), not the REST record field names.
         - |-
-          For incremental runs set `type: delta`, embed `{{lastExportDateTime}}` in the SuiteQL
-          `WHERE` clause (or the record endpoint's `q` parameter) and set `delta.dateFormat` to the
-          format the query compares against, e.g. `to_char(lastmodifieddate,'YYYY-MM-DD HH24:MI:SS') >= '{{lastExportDateTime}}'`
-          with `delta.dateFormat: "YYYY-MM-DD HH:mm:ss"`. In a preview the placeholder renders
-          empty, so preview results do not reflect the delta window.
+          For incremental runs set `type: delta` and embed `{{lastExportDateTime}}` in the SuiteQL
+          `WHERE` clause (or the record endpoint's `q` parameter). SuiteQL returns and compares
+          `lastmodifieddate` as wall-clock time in the session's time zone (`SELECT SESSIONTIMEZONE
+          FROM dual` names it), so give the bound its own UTC offset, the helper's arguments
+          single-quoted because the query sits inside the JSON body:
+          `lastmodifieddate >= TO_TIMESTAMP_TZ('{{dateFormat 'YYYY-MM-DD HH:mm:ss Z' lastExportDateTime}}', 'YYYY-MM-DD HH24:MI:SS TZH:TZM')`.
+          A UTC text compared as it stands — `to_char(lastmodifieddate,'YYYY-MM-DD HH24:MI:SS') >= '{{lastExportDateTime}}'`
+          with `delta.dateFormat: "YYYY-MM-DD HH:mm:ss"` — leaves out a record changed after the
+          bound when the session's zone is behind UTC.
+        - |-
+          A preview renders `{{lastExportDateTime}}` only from the request's `postData`; without it
+          the placeholder is empty, so the preview does not reflect the delta window.
         - |-
           NetSuite must have the REST Web Services feature enabled (Setup > Company > Enable
           Features > SuiteCloud); otherwise every SuiteTalk call fails with NetSuite 403
@@ -145,10 +152,24 @@ ExportBase:
         `webhook` object when `type` is `webhook`); an HTTP or SQL `delta` export saves without a
         `delta` object because its request carries `{{lastExportDateTime}}`, though
         `delta.startDate` sets its first window. It still needs `type: delta`: on an export
-        with no `type`, `{{lastExportDateTime}}` and `{{currentExportDateTime}}` render
-        empty on every run, so a request that carries them goes out with blank values each time
-        (live-verified 2026-10-22). Use `blob` only to transfer raw files without parsing their
-        contents.
+        with no `type` (or `all`), `{{lastExportDateTime}}` and `{{currentExportDateTime}}` are
+        not defined, and where that leaves an HTTP export's run depends on which part of the
+        request carries them. Bare in `http.body` they render empty, so the body goes out with
+        blank values each time; bare in `http.relativeURI` or a header, the run fails before
+        anything is sent with `handlebars_template_parse_error`, "Failed to generate request url
+        (or headers) from template … Details: "lastExportDateTime" not defined in the model".
+        Under `type: test` they are defined but empty, so the URI, a header or the body goes out
+        with blank values instead. `dateFormat` on one renders the run's current time (the
+        request asks for changes since now), and `dateAdd` on one fails the whole render in the
+        body or the relative URI alike — `handlebars_template_parse_error`, "Failed to generate
+        request body (or url) from template … Details: Invalid time value" (live-verified
+        2026-10-22, 2026-11-04 and 2026-11-06). When incremental reads are intended, restoring
+        `type: delta` (with `delta.startDate` for the first window) makes the variables resolve;
+        when reading everything is intended, change the template — drop the variable or guard it
+        with `{{#if lastExportDateTime}}…{{else}}fallback{{/if}}`, whose else branch (a literal, in
+        practice a fixed start date) renders, in the relative URI as well as the body, on an
+        export with no `type`, `type: all` or `type: test`. Use `blob` only to transfer raw files
+        without parsing their contents.
       x-celigo-ai-guidance:
         - |-
           ## HOW TO PICK THE TYPE VALUE
@@ -172,8 +193,8 @@ ExportBase:
           - **Listen for inbound events from NetSuite or Salesforce**
             -> `distributed`
           - **Stream database changes in real time as they happen**
-            (change data capture from MongoDB, SQL Server, or
-            PostgreSQL — "when a row changes", "listen to my table")
+            (change data capture from MongoDB, SQL Server, PostgreSQL
+            or MySQL — "when a row changes", "listen to my table")
             -> `stream`, configured via the `cdc` object
           - **Subscribe to an Event Streams topic** ("listen to topic X",
             "consume messages published to …") -> `stream` with
@@ -181,9 +202,20 @@ ExportBase:
             (no `cdc`, no `_connectionId`)
           - **Transfer raw files WITHOUT parsing their contents into
             records** (images, PDFs, binaries) -> `blob`
-          - **Manual data uploads via the data loader UI** -> `simple`
+          - **A file a person uploads when they run the flow** (a Data
+            Loader flow) -> `simple`
           - **Otherwise** (full / one-shot fetch with no incremental
             tracking) -> leave undefined / null
+        - |-
+          A `simple` export is a Data loader source. Send no `_connectionId` and no adaptor
+          config object, and put the parse settings in the top-level `file` object; with
+          `adaptorType` omitted the server saves `SimpleExport`. `type` is what makes the
+          export a Data loader, so always send it: a create that carried
+          `adaptorType: "SimpleExport"`, a `file` object and no `type` succeeded and was saved
+          as another export (`type: webhook`, `adaptorType: AS2Export`). Put the text of a
+          sample of the file in `sampleData`, which the preview endpoints parse in place of a
+          source. A flow references such an export only as its top-level `_exportId` — in
+          `pageGenerators` it is refused (see the flow schema).
         - |-
           ### Type is an INTENT decision, not an endpoint-capability decision
 
@@ -197,10 +229,12 @@ ExportBase:
           delta config is a separate concern that scopes how you fill in
           the chosen config, not whether to use it.
         - |-
-          `stream` is accepted only on MongoDB and RDBMS exports (SQL Server
-          or PostgreSQL connections) and on Event Streams listeners
+          `stream` is accepted only on MongoDB and RDBMS exports (SQL Server,
+          PostgreSQL or MySQL connections) and on Event Streams listeners
           (`adaptorType: TopicExport`); every other adaptor rejects the save
-          with `unsupported_export_type`. A MongoDB or RDBMS stream export
+          with `unsupported_export_type`, and a MariaDB connection is rejected
+          with 422 `missing_required_field` on `type` ("RDBMS stream export not
+          supported for mariadb"). A MongoDB or RDBMS stream export
           must carry `cdc.snapshotMode` (and `cdc.captureMode` on MongoDB) —
           omitting them fails with 422 `missing_required_field` on those paths.
       enum:
@@ -220,10 +254,10 @@ ExportBase:
         delta: Retrieves only records changed since the last export execution.
         once: Retrieves records one time and marks them as processed in the source system.
         tranlinedelta: Retrieves only transaction line-level changes since the last export execution.
-        simple: Allows manual file uploads through the data loader UI.
+        simple: Data loader source — the records come from a file uploaded for each run of the flow instead of from a source system.
         blob: Retrieves raw files without parsing them into structured data records.
         distributed: Listens for real-time events from NetSuite or Salesforce.
-        stream: Streams events in real time — database change data capture (MongoDB change streams, SQL Server CDC, PostgreSQL logical replication) configured through the `cdc` object, or an Event Streams topic subscription (`TopicExport`) configured through `topic`.
+        stream: Streams events in real time — database change data capture (MongoDB change streams, SQL Server CDC, PostgreSQL logical replication, MySQL binary log) configured through the `cdc` object, or an Event Streams topic subscription (`TopicExport`) configured through `topic`.
         all: Explicitly retrieves all available records — equivalent to omitting `type`.
       examples: ["webhook", "delta", "test", "once", "simple", "blob"]
     pageSize:
@@ -261,26 +295,58 @@ ExportBase:
       description: |-
         Handlebars template that overrides how each record's unique trace key is generated, used
         to track records through the flow and match retries to prior errors (e.g.
-        `{{join "_" record.customerId record.orderId}}`). When omitted, the system picks a unique
-        field automatically from the record's top level, by exact field name (`GET
-        /v1/flows/{_id}/traceKey` serves the pattern). The rendered value of a template is stamped
-        on each record as `io_custom_trace_key` and travels downstream with it. If a transform
-        reshapes the data first, omit the `record.` prefix. Trace keys are capped at 256 characters;
-        a longer key is stored truncated from the middle, keeping the beginning and end of the
-        value. Downstream imports use the trace key as their default concurrency lock key (a blank
-        key means no lock); it never de-duplicates — a record emitted twice with the same key is
-        processed twice.
+        `{{join "_" record.customerId record.orderId}}`). When omitted, the platform derives the
+        key from the ordered field list of the flow's source step (`GET /v1/flows/{_id}/traceKey`
+        serves it). The rendered value of a template is stamped on an object record as
+        `io_custom_trace_key` and travels downstream with it. A record that leaves the export as
+        a group of rows did not carry it to the next step on the grouped exports that were run
+        (the guidance names them) — a known issue; the fix carries it there. If a transform
+        reshapes the data first, omit the `record.` prefix. Trace keys are capped at 256
+        characters; a longer key is stored truncated from the middle, keeping the beginning and
+        end of the value. Downstream imports use the trace key as their default concurrency lock
+        key (a blank key means no lock); it never de-duplicates — a record emitted twice with the
+        same key is processed twice.
       x-celigo-ai-guidance:
         - |-
-          The default derivation reads these top-level fields in order and takes the first present
-          (a record carrying `id` and `internalId` is keyed on `id` alone) — `id`, `Id`, `ID`,
-          `internalid`, `Internalid`, `internalId`, `InternalId`, `INTERNALID`, `_id`, `_Id`, `_ID`,
-          `internal_id`, `internal_Id`, `Internal_id`, `Internal_Id`, `INTERNAL_ID`, `identifier`,
-          `IDENTIFIER` — then a `*anything` rule the platform does not document.
+          For an object record (an export that does not group), the default key is the first
+          field the record carries from the list `GET /v1/flows/{_id}/traceKey` returns for the
+          source step (a record carrying `id` and `internalId` is keyed on `id` alone). The list
+          starts with the exact names `id`, `Id`, `ID`, `internalid`, `Internalid`, `internalId`,
+          `InternalId`, `INTERNALID`, `_id`, `_Id`, `_ID`, `internal_id`, `internal_Id`,
+          `Internal_id`, `Internal_Id`, `INTERNAL_ID`, `identifier`, `IDENTIFIER`.
         - |-
-          A record in flight through the flow carries `io_custom_trace_key` when a template is set
-          — that value is the downstream imports' default lock key; without a template the record
-          carries no trace-key field (the key is derived, not stored on the record).
+          After those names the list carries the source fields named like an id that the flow's
+          import mappings read, in mapping order — an import that maps `Customer_Id` adds
+          `Customer_Id`, so records with none of the standard names are keyed on that field —
+          and then names taken from the export's own configuration, written with a leading `*`:
+          an HTTP export whose relative URI is `v1/mirror` listed `*mirror`, and a record's
+          `mirror_id` became its key.
+        - |-
+          The listed field is read from an object record's top level; when none is there, one
+          level down counts (`order.id` keyed the record). Nested objects that carry different
+          values, or the differing elements of a nested array, leave the key blank, and a field
+          two levels down is not read.
+        - |-
+          On an export whose records are groups of rows — `groupByFields` on an HTTP and on a
+          Snowflake export, and a NetSuite saved search with grouping on, were run — the
+          template's value did not reach the next step: its errors carried the default key and
+          no row carried `io_custom_trace_key`. That is a known issue, not the contract
+          (the fix carries the template's value to the next step); in those runs each group
+          was keyed from the default list instead. The default for a group is the first listed
+          field present on its rows when every row holds the same value; rows that differ on that
+          field leave the key blank, and later listed fields are not tried.
+        - |-
+          To key grouped records on a business identifier, return it on every row as `id` — on a
+          database export, `SELECT orders.*, order_number AS id FROM orders` — and the next
+          step's errors carry it, with or without a template (HTTP and Snowflake exports). On the
+          HTTP export a Transform 2.0 in `mode: create` that reshaped each group into one object
+          also made the template the key, because the record leaving the export was then an
+          object.
+        - |-
+          An object record in flight through the flow carries `io_custom_trace_key` when a
+          template is set — that value is the downstream imports' default lock key; without a
+          template the record carries no trace-key field (the key is derived, not stored on the
+          record).
       examples: ["{{record.id}}", "{{join \"_\" record.customerId record.orderId}}", "{{record.field1}}", "{{record.externalId}}"]
     skipRetries:
       type: boolean
@@ -309,6 +375,13 @@ ExportBase:
           TopicExport`) with `isLookup: true` fails the save with 422 `not_supported`
           ("Lookup functionality is not available for Stream Export"). Enrich from a topic by
           listening to it in its own flow.
+        - |-
+          Not supported together with an async helper (`http._asyncHelperId`). Verified live
+          2026-11-11: a flow that lists such an export in `pageProcessors` is refused at save
+          with 422 `invalid_flow`; an API or a Tool that uses it saves, and invoking it fails
+          with error code `unexpected` (422 from a Tool invoke, 500 from an API request)
+          instead of running the step. Call an asynchronous API from a flow's source export or
+          from an import.
       examples: [true, false]
     groupByFields:
       $ref: './group-by.yml#/GroupBy'
@@ -321,15 +394,31 @@ ExportBase:
     webhook:
       $ref: './webhook.yml#/Webhook'
     simple:
-      $ref: './simple.yml#/Simple'
-      x-celigo-ai-guidance:
-        - |-
-          Configuration for data loader exports that only run in data loader specific flows.
-          Note: This field and all its properties are only relevant when the 'type' field is set to 'simple'.
+      type: object
+      deprecated: true
+      description: |-
+        Not stored. A create or update that carries this object succeeds, and the saved export
+        holds nothing of it. The parse settings of a Data loader export (`type: simple`) are the
+        top-level `file` object.
     distributed:
       $ref: './distributed.yml#/Distributed'
     cdc:
       $ref: './cdc.yml#/Cdc'
+    pendingCursorReset:
+      type: boolean
+      writeOnly: true
+      description: |-
+        When true on a save of a stream listener, requests a reset of the listener's stored stream
+        position — the Cursor Management reset the listener form sends, with `cdc.cursor` omitted
+        from the same document; the listener documentation describes the save as clearing the
+        stored cursor and restarting the listener. Accepted on the request and not stored on the
+        export.
+      x-celigo-ai-guidance:
+        - |-
+          Never author this flag — like `cdc.cursor`, the stream position is the platform's, and
+          the reset is the listener form's Cursor Management action. The API accepts it silently
+          (200) and the readback carries no trace that it was sent, so a save that carried it by
+          mistake cannot be seen afterwards on the export.
     topic:
       $ref: './topic.yml#/Topic'
     filesystem:
@@ -366,7 +455,11 @@ ExportBase:
       description: |-
         Filter applied to each record after the export's transform and before its preSavePage
         hook. Records that match continue through the flow; records that don't are silently
-        dropped. Filter expressions reference the transformed record's fields.
+        dropped. Filter expressions reference the transformed record's fields. A record a
+        JavaScript filter fails on a source export is stored at retry stage `filter` with the
+        transformed record: a retry filters that saved record again with the filter as it is
+        configured now, without reading the source again or repeating the transform (live,
+        2026-11-09).
       allOf:
         - $ref: '../common-schemas/filter.yml#/Filter'
       x-celigo-ai-guidance:
@@ -387,9 +480,10 @@ ExportBase:
       x-celigo-agent:
         - filter
       description: |-
-        Filter applied to incoming records before a lookup export queries the external system.
-        Only matching input records trigger lookup calls; non-matching records pass through the
-        step unenriched, which cuts unnecessary API traffic. Only relevant when `isLookup` is true.
+        Filter applied to each incoming record — each child record when `oneToMany` is true —
+        before a lookup export queries the external system. Only matching records trigger lookup
+        calls; the others pass through the step without lookup results, which cuts unnecessary
+        API traffic. Only relevant when `isLookup` is true.
       allOf:
         - $ref: '../common-schemas/filter.yml#/Filter'
       x-celigo-ai-guidance:
@@ -403,7 +497,7 @@ ExportBase:
           When configured in a lookup export, this filter is applied to the incoming records 
           before they are used to query the external system:
           - Only input records that match the filter criteria will trigger lookup operations
-          - Records that don't match will pass through the step without being enriched
+          - Records that don't match will pass through the step without lookup results
           - This can significantly improve performance by reducing unnecessary API calls
 
           ## USE CASES
@@ -416,7 +510,14 @@ ExportBase:
 
           ## AVAILABLE FILTER FIELDS
           The fields available for filtering are the data fields from the input records
-          passed to this lookup export from previous flow steps.
+          passed to this lookup export from previous flow steps — with `oneToMany`, the
+          fields of each child record (next entry).
+        - |-
+          With `oneToMany: true` the filter is evaluated after the fan-out, once per child record, never on the parent. A rule reads the child's own fields at the root and the parent's fields under `_PARENT`; a rule on a parent-level field at the root matches no child, so every child is counted as ignored, no lookup call is made, and no error is raised. The response mapping then merges lookup results only into the children the filter kept, and the re-joined record continues to the next step. Live-verified 2026-11-20 on a flow test run and real flow runs, in path mode and in row mode (blank `pathToMany` on an array record: each row is the record the filter reads, with no `_PARENT`).
+        - |-
+          A child that is itself an array (the elements under `pathToMany` are arrays of rows) reaches this filter as the array of its rows, each row carrying `_PARENT`. A rule on a field name reads the first row — `<field>` and `_PARENT.<field>` alike — and `<index>.<field>` reads the row at that index. This differs from an import's `filter`, whose array child is the bare rows with no `_PARENT`. Live-verified 2026-11-20 on a flow test run and a real flow run with rule filters; a script filter was not probed on this shape.
+        - |-
+          A record the filter excludes is not done with the step: its response mapping still runs, against an empty, ignored result (`statusCode: 200`, `data: []`, `ignored: true`), so nothing mapped from `data` lands, and the step's `postResponseMap` hook still runs and its changes land on the record. With `oneToMany` each excluded child gets that ignored result in the mapping, and the hook receives the re-joined record, not the children: its changes land on that record. Live-verified 2026-11-20 on a flow test run with a plain lookup and with a one-to-many lookup whose filter kept no child.
     mappings:
       x-celigo-agent:
         - mapping
@@ -465,7 +566,12 @@ ExportBase:
         Transformation that reshapes records before they leave this step — source exports
         transform the retrieved records, lookup exports transform the lookup results. Commonly
         used to flatten nested lookup responses (e.g. `results[0].id` → `id`); merging results
-        back into source records is handled separately by the flow's response mapping.
+        back into source records is handled separately by the flow's response mapping. A record a
+        JavaScript transform fails on a source export is stored at retry stage `transform` with the
+        record as the source returned it: a retry transforms that saved record again with the
+        transform as it is configured now, without reading the source again (live, 2026-11-09). A
+        Transform 1.0 transform's retry is not documented; a Transform 2.0 error is stored at stage
+        `transformation`.
       allOf:
         - $ref: '../common-schemas/transform.yml#/Transform'
       x-celigo-ai-guidance:
@@ -502,7 +608,15 @@ ExportBase:
             hook that returns `options.data` itself, or a filtered copy, drops the page without an
             error, and the run completes with 0 records, 0 errors and 0 pages. An exception thrown
             here fails every record on that page, each with its own retry data, and later pages
-            still run.
+            still run. On a lookup, an error this hook returns through `newErrorsAndRetryData` is
+            stored at retry stage `page_processor_export`: a retry runs the lookup again, as it
+            is configured now, and the hook sees the fresh result. On a source export, an error
+            this hook returns through `newErrorsAndRetryData` is stored at stage `preSave` with the
+            record the hook received: a retry hands that saved record to the hook again, as it is
+            configured now, without reading the source again or repeating the transform and filter,
+            a record the hook passes continues through the flow's steps, and an error it returns
+            again carries a new `retryDataKey` (live, 2026-11-09). The retry of an error a thrown
+            hook produced is not documented.
           properties:
             function:
               type: string
@@ -573,10 +687,12 @@ ExportBase:
       format: objectId
       x-celigo-refModel: ediprofiles
       description: |-
-        EDI profile this export uses to parse incoming X12 or EDIFACT documents into structured
-        JSON — it supplies the envelope qualifiers, delimiters, version, and validation rules.
-        Set it when the export parses or validates EDI files (a save with a `delimited/x12` file
-        definition at `version` `"2"` and no profile fails with 422 `missing_ediProfile`); omit
+        EDI profile this export uses to parse incoming X12, EDIFACT, or TRADACOMS documents into
+        structured JSON — it supplies the envelope qualifiers, delimiters, version, and validation
+        rules. Set it when the export parses or validates EDI files (a save with a `delimited/x12`
+        file definition at `version` `"2"`, or with a `delimited/tradacoms` one, and no profile
+        fails with 422 `missing_ediProfile`); the profile's `fileType` must match the file
+        definition's format, or the save fails with 422 `filetype_mismatch`. Omit
         it otherwise. Accepted on the file-reading exports — FTP, AS2, S3 and HTTP file mode
         (`http.type: "file"`).
       x-celigo-ai-guidance:
@@ -595,7 +711,10 @@ ExportBase:
         Webhook export invoked once per file after EDI parsing, on both success and failure
         (errors are included in the payload when parsing fails). Primarily used to send
         functional acknowledgements (997/999) to trading partners. Accepted on the file-reading
-        exports that parse EDI — FTP, AS2, S3 and HTTP file mode (`http.type: "file"`).
+        exports that parse EDI — FTP, AS2, S3 and HTTP file mode (`http.type: "file"`). Only X12
+        and EDIFACT file definitions at `version` "2" support it; any other file definition,
+        `delimited/tradacoms` included, fails the save with 422 `fileDefinition_format_not_supported`
+        on `_fileDefinitionId`.
       x-celigo-ai-guidance:
         - >-
           The listener must be an export with `type: "webhook"` and `webhook.provider:
@@ -604,6 +723,35 @@ ExportBase:
           with `post_parse_listener_not_supported`: "Listener for functional acknowledgment is
           only supported for AS2, FTP, S3 and HTTP file export."
       examples: ["60a2c4e6f321d800129a1a3c"]
+    _networkPolicyId:
+      type: [string, 'null']
+      format: objectId
+      x-celigo-refModel: networkpolicies
+      description: |-
+        Network policy whose IP allow and deny lists gate the requests that deliver data to this
+        listener. Only `type` `webhook` or `distributed` exports accept it; any other type fails
+        with 422 `not_allowed`. An id that is not one of the environment's network policies,
+        including one in the recycle bin, fails with 400 `network_policy_not_found`. Preserved
+        when omitted on PUT; send `null`, or `remove` it with `PATCH /v1/exports/{_id}` (which
+        also accepts `add` and `replace` with an id), to clear it. Deleting the policy with
+        `?force=true` clears it too. Absent from responses when no policy is assigned.
+
+        Where network-policy enforcement is enabled for the account, a webhook delivery to the
+        listener's `/data` route from an address the policy does not admit is refused with 403
+        `access_denied` — with a valid verification token or an invalid one alike, never 401 —
+        before the listener's verification runs and before the payload is read, so nothing is
+        queued and no flow run starts; an authenticated `GET` or `HEAD` of that route from such an
+        address is refused the same way. Enforcement on listeners is enabled per account. The
+        assignment is recorded in the export's audit as a `_networkPolicyId` field change carrying
+        the policy id.
+      x-celigo-ai-guidance:
+        - >-
+          Assign by sending the whole export document with `_networkPolicyId` set (the form's own
+          save does the same) and clear it with an explicit `null` — a PUT that omits the field keeps
+          the current policy, so a removed key is a silent no-op, not an unassignment. Resolve the
+          policy id from `GET /v1/networkpolicies` in the same environment first: an unknown or
+          recycled id is refused only at save time with 400 `network_policy_not_found`.
+      examples: ["6ab1ebbfb9e4547494ff7558"]
     externalId:
       type: [string, 'null']
       description: External identifier for correlating the export with a record in another system.
@@ -626,6 +774,37 @@ ExportBase:
     unencrypted:
       type: object
       description: Custom configuration values stored without encryption and returned in API responses.
+      additionalProperties: true
+      properties:
+        apiType:
+          type: string
+          enum: [Amazon-SP-API, ""]
+          x-enumDescriptions:
+            Amazon-SP-API: The export calls Amazon's Selling Partner API
+            "": The export calls Amazon's legacy Marketplace Web Service (MWS) API
+          description: |-
+            Selects which Amazon API family the export calls when its connection is an Amazon
+            Seller Central connection of type `Amazon-Hybrid`, which serves both the Selling
+            Partner API and the legacy Marketplace Web Service (MWS). The connection's
+            Selling Partner API access token is sent only with a request of the export that
+            selects the Selling Partner API.
+          x-celigo-ai-guidance:
+            - |-
+              This is a field of the export, not of its connection: the connection's `http.type`
+              says which API families it can reach, and each export on an `Amazon-Hybrid`
+              connection names its own. Set `Amazon-SP-API` on every export that calls a Selling
+              Partner API endpoint through such a connection; without it the request leaves
+              without the access token and Amazon answers "Access token is missing in the
+              request header."
+            - |-
+              The export form offers this choice only when the connection's `http.type` is
+              `Amazon-Hybrid`, and writes `Amazon-SP-API` itself on every export whose connection's
+              `http.type` is `Amazon-SP-API`.
+            - |-
+              A full PUT that omits `unencrypted` clears this field, so resend the stored value on
+              every update. On an `Amazon-Hybrid` connection a value outside the enum fails the save
+              with 422 `invalid_value_for_amazon_api_type` on `unencrypted.apiType`.
+          examples: [Amazon-SP-API]
     useTechAdaptorForm:
       type: boolean
       description: |-
@@ -658,7 +837,26 @@ ExportBase:
       description: Metadata associated with the connector assistant configuration.
     sampleData:
       type: [string, object, array, 'null']
-      description: Sample data payload used for previewing and testing the export.
+      description: |-
+        Sample data payload used for previewing and testing the export. On a Data loader export
+        (`type: simple`) it is the text of a sample of the file: the preview endpoints parse it
+        with the export's `file` settings and return the records — except when the doc also
+        carries a Transformation 2.0 (a known issue, described in the guidance). An
+        object or array value there fails the preview with 422 `sample_data_invalid` on each
+        of the three preview routes.
+      x-celigo-ai-guidance:
+        - |-
+          Known issue, until the fix is released: a Data loader doc (`type: simple`)
+          parsed from a CSV `sampleData` that also carries a Transformation 2.0
+          (`transform.expression.rulesTwoDotZero`) fails at the transformation with 422 — the parsed
+          records in a `parse` stage, then one error per record with `code: missing_required_field`,
+          `source: transformation` and the message "Connection is required to perform preview." — on
+          each of the three preview routes. Do not set `_connectionId` for this 422: a Data loader
+          export has no connection. With a 1.0 transformation (`transform.expression.rules`) or an
+          output `filter` in place of the Transformation 2.0, such a doc returns 200, with a
+          `transform` or `outputFilter` stage after `parse`. A doc that carries the Transformation
+          2.0 and also a `mockOutput` returns 200, the mock's first record in a `parse` stage, and
+          the Transformation 2.0 is not run (live, 2026-11-21).
     sampleHeaders:
       type: array
       description: Sample HTTP headers used for previewing and testing the export.

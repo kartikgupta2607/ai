@@ -14,12 +14,16 @@ EDIProfileBase:
       examples: ["X12 interchange profile for Acme Corp trading partner"]
     fileType:
       type: string
-      enum: ["edix12", "edifact"]
+      enum: ["edix12", "edifact", "tradacoms"]
       x-enumDescriptions:
         edix12: ANSI X12 EDI standard using ISA/GS envelope segments.
         edifact: UN/EDIFACT EDI standard using UNB envelope segments.
-      description: The EDI standard this profile is configured for. Immutable after creation.
-      examples: ["edix12", "edifact"]
+        tradacoms: UK TRADACOMS EDI standard using STX/END envelope segments; pairs with `delimited/tradacoms` file definitions.
+      description: |-
+        The EDI standard this profile is configured for. Immutable after creation: a PUT
+        that sends a different value fails with 422 `invalid_field`. The list operation's
+        `fileType` query parameter filters on the same three values.
+      examples: ["edix12", "edifact", "tradacoms"]
     tpInterchangeId:
       type: string
       description: |-
@@ -43,9 +47,14 @@ EDIProfileBase:
     controlNumber:
       type: integer
       minimum: 1
-      maximum: 999999999
+      maximum: 99999999999999
       default: 1
-      description: Current interchange control number. Incremented with each interchange sent.
+      description: |-
+        Current interchange control number, incremented with each interchange sent. X12 and
+        EDIFACT profiles accept 1 to 999999999; a `tradacoms` profile accepts up to the largest
+        number with `controlNumberLength` digits (999999 at the default of six), and a larger
+        value fails the save with 422. The default applies on create only: a PUT that omits
+        `controlNumber` removes it.
       examples: [1, 1001]
 
     # --- X12-specific fields (fileType: edix12) ---
@@ -197,3 +206,39 @@ EDIProfileBase:
       description: |
         EDIFACT controlling agency code.
       examples: ["UN", "EC", "AA"]
+
+    # --- TRADACOMS-specific fields (fileType: tradacoms) ---
+    # Stored only on a tradacoms profile: an X12 or EDIFACT save drops them.
+    stxSyntaxId:
+      type: string
+      description: TRADACOMS STX syntax identifier written to the interchange header.
+      examples: ["ANA"]
+    stxSyntaxVersion:
+      type: string
+      description: TRADACOMS STX syntax version written to the interchange header.
+      examples: ["1"]
+    myInterchangeName:
+      type: string
+      description: Your interchange name, sent in the STX header alongside `myInterchangeId`.
+      examples: ["MY COMPANY LTD"]
+    tpInterchangeName:
+      type: string
+      description: Trading partner's interchange name, sent in the STX header alongside `tpInterchangeId`.
+      examples: ["ACME RETAIL LTD"]
+    stxIncludeTime:
+      type: boolean
+      description: When true, the STX header carries the transmission time as well as the date.
+      examples: [true]
+    controlNumberLength:
+      type: integer
+      minimum: 1
+      maximum: 14
+      default: 6
+      description: |-
+        Number of digits in the TRADACOMS interchange control number, which caps
+        `controlNumber`; stored only on a `tradacoms` profile. The default applies on create
+        only: a PUT that omits it removes it and leaves `controlNumber` uncapped, so send it
+        on every PUT. A non-integer or `null` value fails the save with 422 `invalid_type`
+        "Provided Control Number Length is of incorrect data type, expected Number but
+        received Decimal." (or `Null`).
+      examples: [6]

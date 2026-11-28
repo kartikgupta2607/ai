@@ -261,7 +261,15 @@ Form:
                     description: |
                       Export document to run, inline: `adaptorType`, its adaptor block, and an optional
                       `transform`. `_connectionId` defaults to the connection of the export or import the
-                      form belongs to; set it on any other resource's form.
+                      form belongs to; set it on any other resource's form. On an integration's form,
+                      and on the forms of its flows, it may also be the name of one of the integration's
+                      `aliases[]`, matched without regard to case: the UI previews the block on the
+                      route scoped to the form's resource, where the alias resolves to its connection
+                      (past the preview's type check, a value that is neither a connection id nor an
+                      alias in that scope is a 400 `invalid_ref` there). Forms installed from a
+                      template name connections this way, since the same block runs in every account
+                      the template is installed in. The unscoped `POST /v1/exports/preview` knows no
+                      aliases: past the preview's type check, an alias name there is 400 `invalid_ref`.
                     additionalProperties: true
                 examples:
                   - virtual:

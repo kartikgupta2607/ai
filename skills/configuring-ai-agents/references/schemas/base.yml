@@ -91,7 +91,7 @@ ImportBase:
         MongodbImport: MongoDB database import for document-based operations.
         DynamodbImport: Amazon DynamoDB import for NoSQL table operations.
         WrapperImport: Custom adaptor import built outside of Celigo (rarely used).
-        AiAgentImport: AI agent import using OpenAI, Gemini, Anthropic Claude, or a BYOK catalog provider (Mistral, xAI, Hugging Face, DeepSeek, Cohere, Groq) for data processing.
+        AiAgentImport: AI agent import using OpenAI, Gemini, Anthropic Claude, or a BYOK catalog provider (Mistral, xAI, Hugging Face, DeepSeek, Cohere, Groq, Together AI, Azure OpenAI, Fireworks AI, AWS Bedrock, NVIDIA NIM, Ollama Cloud, Google Vertex AI) for data processing.
         GuardrailImport: Safety and compliance check import for PII detection, moderation, or AI evaluation.
         FileSystemImport: Local or network file system import.
         ToolImport: Import that executes a reusable Celigo Tool resource.
@@ -183,9 +183,66 @@ ImportBase:
     unencrypted:
       type: object
       description: Custom configuration values stored without encryption and returned in API responses.
+      additionalProperties: true
+      properties:
+        apiType:
+          type: string
+          enum: [Amazon-SP-API, ""]
+          x-enumDescriptions:
+            Amazon-SP-API: The import calls Amazon's Selling Partner API
+            "": The import calls Amazon's legacy Marketplace Web Service (MWS) API
+          description: |-
+            Selects which Amazon API family the import calls when its connection is an Amazon
+            Seller Central connection of type `Amazon-Hybrid`, which serves both the Selling
+            Partner API and the legacy Marketplace Web Service (MWS).
+          x-celigo-ai-guidance:
+            - |-
+              This is a field of the import, not of its connection: the connection's `http.type`
+              says which API families it can reach, and each import on an `Amazon-Hybrid`
+              connection names its own. Set `Amazon-SP-API` on every import that calls a Selling
+              Partner API endpoint through such a connection.
+            - |-
+              The import form offers this choice only when the connection's `http.type` is
+              `Amazon-Hybrid`, and writes `Amazon-SP-API` itself on every import whose connection's
+              `http.type` is `Amazon-SP-API`.
+            - |-
+              A full PUT that omits `unencrypted` clears this field, so resend the stored value on
+              every update. On an `Amazon-Hybrid` connection a value outside the enum fails the save
+              with 422 `invalid_value_for_amazon_api_type` on `unencrypted.apiType`.
+          examples: [Amazon-SP-API]
     sampleData:
       type: [object, array, string]
-      description: Sample input record used to preview and build the import's mappings.
+      description: |-
+        Sample of the record the import writes, in the destination's own shape — the
+        mapping editor builds its destination field list from it when none of its earlier
+        sources applies: an HTTP connector on the connection, a bulk-load table's columns,
+        an Integration App's metadata, then this field. `AiAgentImport`, `GuardrailImport`
+        and `ToolImport` are the exception: the editor never reads this field on them — it
+        maps an AI agent or guardrail step into the step's fixed input (`text` and `record`,
+        plus `files` on an AI agent or a moderation guardrail) and a Tool step into the
+        tool's `input.schema`. On a file
+        transfer it is the generated file's record: for `file.type` `filedefinition` (EDI
+        X12 / EDIFACT, fixed-width or another custom format) the definition's generate
+        sample — a record whose nested arrays are the document's repeating loops, carried
+        by the template catalog as an array holding that one record — and for the csv /
+        xlsx / xml / json types the uploaded sample file's content as text, which the
+        editor parses with the import's `file` settings and reads the first record of. It
+        is never the flow's source record, which comes from the previous step's preview.
+      x-celigo-ai-guidance:
+        - |-
+          Except on `AiAgentImport`, `GuardrailImport` and `ToolImport`, which never take
+          their destination from this field, the destination's source is decided in one
+          order — an HTTP connector on the connection, then a bulk-load table's columns, then
+          an Integration App's metadata, then this field. Where it falls to this field, read
+          it as the destination structure: on a file definition map into the record's
+          nested arrays (unwrap a one-element array first; an 846's `LIN` array holds the
+          item identifier and its `QTY` quantities), on csv / xlsx / xml / json parse the
+          text and map the first record. A field missing from it is missing from the
+          sample, not evidence that the destination rejects it.
+        - |-
+          Refresh application metadata only where one of the earlier sources exists; an
+          import whose destination falls to this field has nothing to refresh, and on a file
+          definition a missing destination is a question of the definition's generate rules.
     distributed:
       type: boolean
       description: |-
@@ -305,8 +362,8 @@ ImportBase:
         Handlebars template that generates a concurrency lock key for each record: records that
         render the same key are never submitted at the same time, while records with different
         keys are processed in parallel. When omitted, the record's trace key is the lock key (a
-        blank trace key means no lock; a custom `traceKeyTemplate` upstream arrives on the record
-        as `io_custom_trace_key`); a template replaces that default rather than adding to it.
+        blank trace key means no lock; a custom `traceKeyTemplate` upstream arrives on an object
+        record as `io_custom_trace_key`); a template replaces that default rather than adding to it.
         The template is rendered from the record as it arrives at the import — before the import's
         own lookups and mapping run — so a key built from one of the import's lookup results
         (`{{lookup.<name>}}`) or from a mapped field renders empty, and an empty key is no lock at
@@ -439,14 +496,21 @@ ImportBase:
         Filter applied to incoming records before they are sent to the destination system.
         Records that match continue through the import; records that don't skip this import,
         counted as ignored, and continue to the next step. Filter expressions reference the
-        incoming record's fields.
+        incoming record's fields; when `oneToMany` is true the filter runs once per child record,
+        after the record is split, and references each child's fields.
       allOf:
         - $ref: '../common-schemas/filter.yml#/Filter'
       x-celigo-ai-guidance:
         - |-
           ## IMPORT-SPECIFIC BEHAVIOR
 
-          **Pre-Import Filtering**: Filters are applied to incoming records before they are sent to the destination system. A record that doesn't match is not sent, but it is not removed from the flow: it continues to the next step without this import's response-mapped fields, so a later step that writes those fields needs its own filter.
+          **Pre-Import Filtering**: Filters are applied to incoming records before they are sent to the destination system. A record that doesn't match is not sent, but it is not removed from the flow: it continues to the next step, so a later step that writes the destination's fields needs its own filter. Its response mapping still runs, against an empty, ignored response (`statusCode: 200`, `_json: {}`, `ignored: true`): a field mapped from `id` stays absent, fields mapped from `ignored` and `statusCode` hold `true` and `200`, and the step's `postResponseMap` hook still runs with the record in `postResponseMapData`. Live-verified 2026-11-20 on a flow test run of an import without `oneToMany`; a real flow run counted the record as ignored. With `oneToMany` only a child the filter excluded is mapped that way; a child it kept is mapped from the import's own response for it (`id` and `statusCode` land, `ignored` does not). The hook runs once per page on the re-joined records, whether the filter kept some children or none (same date, flow test run).
+        - |-
+          With `oneToMany: true` the filter is evaluated after the fan-out, once per child record, never on the parent. A rule reads the child's own fields at the root (`<field>`) and the parent's fields under `_PARENT` (`_PARENT.<field>`). A rule on a parent-level field at the root matches no child: every child is counted as ignored, nothing is sent, and no error is raised. A script filter's `options.record` is the child. Live-verified 2026-11-20: rule filters on flow, Tool and API test runs and on real flow runs, a script filter on flow runs; in row mode (blank `pathToMany` on an array record) each row is the record the filter reads, with no `_PARENT`.
+        - |-
+          To send only some of a record's children, this is the setting: `oneToMany` with a filter on the child's field. The children the filter keeps are sent, the others are counted as ignored, and the re-joined record continues to the next step; the response mapping lands the response's fields on the kept children and the ignored response's fields on the others. A branching step cannot select children — it routes each record once, as a whole (see `oneToMany`). Live-verified 2026-11-20 on flow test runs; real flow runs showed the same kept and ignored counts.
+        - |-
+          A child that is itself an array (the elements under `pathToMany` are arrays of rows) reaches the filter as the bare array, without `_PARENT`: a rule on a field name reads the first row, `<index>.<field>` reads the row at that index, a `_PARENT` path matches nothing, and a script filter's `options.record` is the array. Live-verified 2026-11-20 on flow test runs and real flow runs.
     traceKeyTemplate:
       type: string
       x-celigo-agent:
@@ -479,8 +543,11 @@ ImportBase:
         integrator.io canonical format — the server rejects any other shape with a 422.
       x-celigo-ai-guidance:
         - |-
-          Flow test runs and flow-builder previews NEVER execute imports —
-          they substitute this mockResponse, or the platform placeholder
+          Flow-builder previews NEVER execute an upstream import, and flow
+          test runs never execute an import other than one that calls a
+          Tool (``ToolImport`` — a test run runs the Tool and does not read
+          this field; last entry). Both substitute this mockResponse, or
+          the platform placeholder
           ``{id: "1234567890", mockResponse: "replace me"}`` when none is
           saved. With the placeholder, downstream response mappings extract
           nothing real and downstream steps' sample panels go empty — the
@@ -490,6 +557,28 @@ ImportBase:
           ``POST /v1/imports/preview`` is the exception: it executes the
           composed destination request for real — mockResponse does not
           protect that surface.
+        - |-
+          A test run of a flow, Tool or API in which an import with no
+          saved mockResponse executes saves the placeholder on that import
+          as its mockResponse (the import's ``lastModified`` changes). A
+          saved mockResponse holding ``mockResponse: "replace me"`` is that
+          placeholder, not a response anyone authored — replace it with a
+          realistic one.
+        - |-
+          An import that calls a Tool (``ToolImport``) is the exception in
+          test runs: a test run of a flow, Tool or API runs the Tool — its
+          lookups answer from a saved ``mockOutput`` or read their
+          application, its imports are not sent — and returns the Tool's
+          output without reading this mockResponse, though it still saves
+          the placeholder on a ``ToolImport`` that has none. Only the
+          flow-builder preview reads a ``ToolImport``'s mockResponse, in
+          place of the Tool's output, for the steps after it: to preview
+          those steps with what the Tool returns, save
+          ``[{"statusCode": 200, "errors": [], "_json": <the Tool's
+          output>}]`` here. The preview reads that mock as saved — a
+          response-mapping extract written ``_json.<path>`` finds its
+          value, a root path (``<path>``) finds nothing unless the mock
+          repeats the field at its root (live, 2026-11-27).
       items:
         type: object
         properties:
@@ -519,7 +608,7 @@ ImportBase:
       format: objectId
       x-celigo-refModel: ediprofiles
       description: |-
-        EDI profile this import uses to generate outbound X12 or EDIFACT documents — it supplies
+        EDI profile this import uses to generate outbound X12, EDIFACT, or TRADACOMS documents — it supplies
         the envelope qualifiers, delimiters, version, and validation rules. Set it when the
         import produces EDI output; omit it otherwise. Accepted on the file-writing imports —
         FTP, AS2, S3 and HTTP file mode (`http.type: "file"`).
@@ -627,10 +716,12 @@ ImportBase:
             Hook that runs after the destination system responds, with access to both the
             submitted records and the destination's responses. Commonly used to inspect results
             or adjust the response data passed downstream. Each `options.responseData` entry is
-            one submitted record's result, in order: `statusCode`, `errors` (`{code, message,
-            source}`, empty on success), `ignored`, `id`, and `_json` — the destination's parsed
-            response body, where its own error detail sits (`_headers` holds the response
-            headers).
+            one submitted record's result, in order: `statusCode` (the import's verdict on the
+            record — 200 written, 422 failed — not the destination's HTTP status), `errors`
+            (`{code, message, source}`, empty on a written record; on a failed one `errors[0]`
+            holds the failure's detail), `ignored`, `id`, and `_json` — the destination's response
+            body, parsed: `{}` when it sent none, the raw text when the body is not JSON. A
+            written record's entry also carries `_headers`, the response headers.
           x-celigo-ai-guidance:
             - |-
               Post-submit JavaScript hook — runs AFTER each batch of
@@ -643,6 +734,60 @@ ImportBase:
               response, whose envelope carries the mock's id, such as
               ``1234567890``) → array of the same length, typically mutated
               to annotate or augment per-record errors.
+            - |-
+              `statusCode` is the import's verdict, not the HTTP status the
+              destination answered: 200 on the entry of a record the import
+              counts as written, 422 on the entry of a record it counts as
+              failed. Verified live 2026-11-13 with a hook that reported its
+              input: destination answers 200, 201, 202 and 204 each arrived
+              as `statusCode` 200 with `errors` empty; answers 400, 404, 409,
+              418 and 500 each arrived as `statusCode` 422. The Help Center's
+              postSubmit stub documents a third value that run did not
+              produce: 403, "the connection went offline".
+            - |-
+              What `errors[0]` of a failed entry carried in that run, by
+              cause. The destination answered 400, 404, 409, 418 or 500:
+              `code` is that status as a number and `message` the raw
+              response body, or the status text ("Bad Request") when the body
+              is empty. A 200 answer matched the import's
+              `http.response.failPath`: `code` is 200 (a number) and
+              `message` the raw body. A 200 answer did not meet
+              `http.response.successPath`: `code` is the string
+              `response_failure` and `message` starts "response failed using
+              path". The request URL template could not be rendered, so
+              nothing was sent: `code` is the string
+              `handlebars_template_parse_error`. Read `errors[0].code` as the
+              destination's status only when it is a number.
+            - |-
+              Each failed entry in that run — one per cause above — had the
+              keys `_json`, `errors` and `statusCode` and no `_headers`; each
+              written entry had `_headers`. A written entry does not carry
+              the destination's status anywhere, so a hook cannot tell a 204
+              from a 200 by status: tell written answers apart by what they
+              carry in `_json` or `_headers`.
+            - |-
+              Test `statusCode` against 200 for "written", never against a
+              status the destination sends. With the entries of that run a
+              test such as `statusCode !== 204` holds for every written
+              record, so a hook that raises an error on it fails all of them,
+              and a test such as `statusCode === 400` never holds, so a hook
+              that handles a refused record on it does nothing: read a failed
+              record's destination status from `errors[0].code`.
+            - |-
+              `_json` is `{}` when the answer has no body, the raw text when
+              the body is not JSON (the 418 answer had a plain-text body) and
+              the parsed body otherwise, on failed entries too (the
+              `failPath` and `successPath` failures above), so check its type
+              before reading fields from it.
+            - |-
+              An error this hook raises is stored at retry stage
+              `page_processor_import`, like the import's own errors: a retry
+              maps the saved record again and sends it to the destination
+              again, so a record the destination had accepted before the hook
+              failed it is written a second time (live, 2026-10-22). Before
+              retrying such errors, find out whether the destination took each
+              record — the hook's message, or a lookup of the record there —
+              and retry only the refusals.
           allOf:
             - $ref: '../common-schemas/hooks.yml#/Hook'
         postAggregate:
@@ -672,7 +817,7 @@ ImportBase:
       description: |-
         Sample destination response kept with the import for authoring its response mapping.
         Flow test runs and previews don't read it; they substitute `mockResponse`, or a
-        placeholder when none is saved.
+        placeholder when none is saved (a test run of a `ToolImport` runs the Tool instead).
     responseTransform:
       x-celigo-agent:
         - transform
@@ -790,8 +935,11 @@ ImportBase:
           x-celigo-ai-guidance:
             - |-
               Body-level field mappings. Each entry writes one destination
-              column from one source expression. Order has no semantic
-              meaning; entries are applied independently per record.
+              column from one source expression. Entries are applied
+              independently per record, and order matters only between entries
+              that write the same ``generate``: in the Mapper 1.0 processor
+              (``POST /v1/processors/mapperProcessor``) the later entry's
+              value was the one written.
         lists:
           type: array
           description: List-level mappings, each generating a sublist on the target record.
@@ -809,10 +957,12 @@ ImportBase:
 
                     This identifies the array itself — do NOT add bracket
                     notation here. Per-element semantics belong on the inner
-                    ``fields[].extract`` paths (which path-walk from the source
-                    record root and use ``[*]`` to drive iteration). Dot
-                    notation IS allowed here when the destination places the
-                    array inside a parent object (e.g. ``order.lines``).
+                    ``fields[].extract`` paths, which path-walk from the source
+                    record root: ``<array>[*].<field>`` iterates a source array
+                    on an object record, ``*.<field>`` iterates the rows of a
+                    grouped record (an array of rows). Dot notation IS allowed
+                    here when the destination places the array inside a parent
+                    object (e.g. ``order.lines``).
               fields:
                 type: array
                 description: Field mappings applied within each generated list item.
@@ -823,6 +973,14 @@ ImportBase:
                     Per-element field mappings applied to each item in the extracted
                     array. Uses the same shape as top-level ``fields`` — same
                     extract / generate / lookupName / conditional semantics.
+                  - |-
+                    The iteration notation follows the record's shape (the two forms
+                    named on ``generate``): ``<array>[*].<field>`` on an object record;
+                    ``*.<field>`` (``*.[Item SKU]``) on a grouped record — an array of
+                    rows, as a grouped saved search delivers — where a top-level
+                    ``fields`` row reads the first row. In both shapes a child whose
+                    extract is a plain path to a scalar repeats that value on every
+                    element.
           x-celigo-ai-guidance:
             - |-
               One source-array → destination-array projection. The destination is
@@ -853,7 +1011,7 @@ ImportBase:
           mode evaluates against the wrapped runtime envelope
           (``"$.record.field"``).  See ``inputContext`` for the full
           per-mode contract.  Handlebars expressions in ``extract`` always
-          reference ``{{record.field}}`` regardless — only JSONPath
+          reference ``{{{record.field}}}`` regardless — only JSONPath
           behavior flips with ``inputContext``.
         - |-
           ## JSON structure — record { } or rows [ ]
@@ -973,8 +1131,8 @@ ImportBase:
         - |-
           ## Handlebars expressions are NOT affected
 
-          Handlebars expressions inside ``extract`` (``{{record.field}}``,
-          ``{{dateFormat ... record.field}}``, etc.) ALWAYS reference the
+          Handlebars expressions inside ``extract`` (``{{{record.field}}}``,
+          ``{{{dateFormat ... record.field}}}``, etc.) ALWAYS reference the
           runtime context's ``record`` root regardless of
           ``inputContext`` — the Handlebars runtime always sees the
           wrapped envelope. Only JSONPath behavior flips with this field.
@@ -1057,15 +1215,39 @@ MappingField:
         - A dot path from the record root (e.g. `email`, `address.city`), read from the
           incoming record. A path that matches no field writes nothing.
         - Handlebars template (contains `{{`) for concatenation /
-          formatting / conditional logic (e.g. `{{firstName}} {{lastName}}`,
-          `{{#if mobile}}{{mobile}}{{else}}{{phone}}{{/if}}`). The template reads the
+          formatting / conditional logic (e.g. `{{{firstName}}} {{{lastName}}}`,
+          `{{#if mobile}}{{{mobile}}}{{else}}{{{phone}}}{{/if}}`). The template reads the
           record's fields by bare name: `{{record.firstName}}` and `{{data.firstName}}`
           render nothing, so the field is left out even when the record has the value.
+          A substitution that outputs a value takes triple braces: double braces
+          HTML-escape it (`O'Brien` is written as `O&#x27;Brien`).
 
         A `$.` JSONPath (the Mapper 2.0 `mappings` syntax) reads nothing here, and a bare
         string is read as a field path, not a constant: set constants in `hardCodedValue`.
         Omit when using `hardCodedValue`.
       examples: ["address.city"]
+      x-celigo-ai-guidance:
+        - |-
+          Double braces HTML-escape whatever they output — a field, a helper's result
+          (`{{uppercase lastName}}`, `{{join ", " tags}}`) and a substitution inside a
+          block — with no error: `&`, `<`, `>`, `"`, `'`, `=` and the backtick are
+          written as `&amp;`, `&lt;`, `&gt;`, `&quot;`, `&#x27;`, `&#x3D;` and `&#x60;`.
+          The same expressions in triple braces, and a plain path, write the value
+          unchanged.
+        - |-
+          In a `dataType: json` row the rendered text is parsed, so a string value needs
+          JSON escaping instead: `[{{{jsonSerialize name}}}]` wrote a value holding a
+          double quote and an apostrophe intact, `["{{{name}}}"]` failed the row on it
+          (`Expected ',' or ']' after array element in JSON`) and `["{{name}}"]` wrote
+          the HTML-escaped text. Keep a space between the helper's closing braces and
+          an object's closing brace: `{"name": {{{jsonSerialize name}}}}` failed with
+          `malformed_expression`, `{"name": {{{jsonSerialize name}}} }` was parsed.
+        - |-
+          `jsonEncode` inside the quotes, in triple braces, is the other form that
+          holds: `{"label":"{{{jsonEncode name}}}"}` wrote a value holding a double
+          quote, a backslash and an apostrophe intact, as `{"label": {{{jsonSerialize
+          name}}} }` did. In double braces (`"{{jsonEncode name}}"`) the same row
+          failed on that value with `Bad escaped character in JSON`.
     hardCodedValue:
       type: [string, 'null']
       description: Static value written to `generate` instead of extracting from the source record.
@@ -1079,13 +1261,30 @@ MappingField:
       enum: [string, number, boolean, numberarray, stringarray, json]
       x-lowercase: true
       x-enumDescriptions:
-        string: Text string data type.
-        number: Numeric data type including integers and decimals.
-        boolean: True or false data type.
-        numberarray: Array of numeric values.
-        stringarray: Array of text string values.
-        json: Arbitrary JSON object or structure.
-      description: Data type coercion applied to the mapped value.
+        string: The value as text; an array or object is flattened to text
+        number: The digits and decimal point kept from the text, every other character dropped
+        boolean: "`false`, `no`, `f` (any case) and an empty value become false; any other non-empty value becomes true"
+        numberarray: A one-element array holding the value converted as `number`; delimited text and a real array are joined into that one element
+        stringarray: A one-element array holding the value as text; delimited text and a real array are joined into that one element
+        json: The rendered text parsed as JSON into a real array or object
+      description: |-
+        Conversion applied to the mapped value — the extracted value, or the Handlebars
+        render, which is always text — before it is written. Omit it to write the value as the
+        source delivers it (a source array stays an array). The array types never split text:
+        a delimited string that must become a multi-element array is written by a `json` row
+        whose extract renders JSON text, such as `[{{replace tags " " ""}}]`.
+      x-celigo-ai-guidance:
+        - |-
+          A value outside the enum (`date`, `datetime`, `object`, `objectarray`,
+          `booleanarray`) fails the import save with 422 `enum`; a date destination is
+          `string` with `extractDateFormat` / `generateDateFormat`.
+        - |-
+          `number` drops the minus sign (`-3` is written as `3`) and `boolean` reads `"0"` as
+          true; pass a signed number or a 0/1 flag through with no `dataType` instead.
+        - |-
+          Set `json` through the API: the mapping editor's data-type list does not include
+          it (the Help Center's Mapper 1.0 article "Map source data fields to destination"
+          lists Boolean, Date, Number, Number array, String and String array).
     discardIfEmpty:
       type: boolean
       description: When true, the field is omitted from the output when the extracted value is empty.
@@ -1097,7 +1296,15 @@ MappingField:
           may overwrite existing data; a missing source is left out either way.
     immutable:
       type: boolean
-      description: When true, the mapped value cannot be overwritten by later mapping steps.
+      description: |-
+        A NetSuite distributed import's row flag; its rows are `netsuite_da.mapping.fields[]`, and
+        that field documents it. On this row it does not protect the value from a later row that
+        writes the same `generate`.
+      x-celigo-ai-guidance:
+        - |-
+          Live-verified in the Mapper 1.0 processor (`POST /v1/processors/mapperProcessor`):
+          with two rows writing the same `generate`, the later row's value was the one written
+          whether or not the earlier row carried `immutable: true`.
     lookupName:
       type: string
       description: Name of an entry in the import's `lookups` array (`http.lookups` on an HTTP import) used to translate the value.
@@ -1118,6 +1325,10 @@ MappingField:
           Use ``default``, not ``hardCodedValue``, for a fallback on a field that is
           sometimes empty: ``hardCodedValue`` is written on every record and replaces
           the values that exist.
+        - |-
+          The row's ``dataType`` converts the default too: a null default is written as
+          null on a ``string``, ``json`` or untyped row — ``boolean`` writes false,
+          ``number`` writes 0 and the array types write an empty array.
     extractDateFormat:
       type: string
       description: Date format of the source value, used to parse it before conversion.

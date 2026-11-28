@@ -101,12 +101,17 @@ UserBase:
     accountMFARequired:
       type: boolean
       description: |-
-        When true, MFA is required for this user in this account. Cleared when
-        omitted on update — resend it with every `PUT /v1/ashares/{_id}`.
-
+        When true, the user must complete Celigo MFA to access this account even after
+        signing in through SSO, which otherwise needs no second factor (the user form
+        labels it **Require MFA after SSO** for a user with SSO configured); false lifts
+        that after-SSO challenge. Password sign-in on a paid account requires MFA
+        whatever this holds — only on a free-trial account does the flag still decide
+        it, as the form's per-user **Require MFA** switch. Cleared when omitted on
+        update — resend it with every `PUT /v1/ashares/{_id}`.
+      examples: [false]
       x-celigo-ai-guidance:
-        - Whether the invited user must use MFA to access this account.
-        - The invite body takes it too, so require MFA in the invite itself rather than with a follow-up update, which must resend `integrationAccessLevel` and this flag or clears them.
+        - Setting it false never turns MFA off for a password user on a paid account; to let someone re-enroll or recover their authenticator, use the Users page's **Reset MFA** action instead.
+        - The invite body takes it too, so require MFA after SSO in the invite itself rather than with a follow-up update, which must resend `integrationAccessLevel` and this flag or clears them.
     allowAccessToAPIM:
       type: boolean
       readOnly: true

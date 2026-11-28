@@ -1,28 +1,37 @@
 PreviewRequest:
   type: object
-  description: Request body for previewing export data
-  allOf:
-    - $ref: './response.yml#/Export'
-    - type: object
+  description: |-
+    Request body of the scoped export previews (`POST /v1/integrations/{_integrationId}/exports/preview`
+    and `POST /v1/integrations/{_integrationId}/flows/{_flowId}/exports/preview`): a full export
+    document (mirror of `POST /v1/exports` body shape), optionally with `test.limit` to cap
+    preview record count. Omit `_id` when previewing a not-yet-saved export, such as a settings
+    form's `resource.virtual` block.
+  additionalProperties: true
+  properties:
+    _connectionId:
+      type: string
+      description: |-
+        Connection the export reads from: a connection id, or the name of one of the
+        integration's `aliases[]`, matched without regard to case. The unscoped
+        `POST /v1/exports/preview` accepts a connection id only.
+    postData:
+      type: object
+      description: |-
+        Delta window for this preview. Without it, a document preview renders
+        `{{lastExportDateTime}}` and `{{currentExportDateTime}}` empty, so the preview doesn't
+        reflect the export's delta window: an HTTP request gets empty strings, and an RDBMS
+        query gets empty, unquoted text, so a delta query fails to parse (observed on Snowflake;
+        `delta.startDate` doesn't set them either). With it, an HTTP export inserts each value
+        exactly as given, and an RDBMS query receives each wrapped in single quotes
+        (`'2026-01-15T00:00:00.000Z'`, observed on Snowflake); other adaptors weren't checked.
+        On an export without `delta.dateFormat`, a real run renders both as ISO 8601 UTC with
+        milliseconds, so pass them in that form to preview the request such a run would send.
       properties:
-        postData:
-          type: object
-          description: |-
-            Delta window for this preview. Without it, a document preview renders
-            `{{lastExportDateTime}}` and `{{currentExportDateTime}}` empty, so the preview doesn't
-            reflect the export's delta window: an HTTP request gets empty strings, and an RDBMS
-            query gets empty, unquoted text, so a delta query fails to parse (observed on Snowflake;
-            `delta.startDate` doesn't set them either). With it, an HTTP export inserts each value
-            exactly as given, and an RDBMS query receives each wrapped in single quotes
-            (`'2026-01-15T00:00:00.000Z'`, observed on Snowflake); other adaptors weren't checked.
-            On an export without `delta.dateFormat`, a real run renders both as ISO 8601 UTC with
-            milliseconds, so pass them in that form to preview the request such a run would send.
-          properties:
-            currentExportDateTime:
-              type: string
-              description: Value `{{currentExportDateTime}}` renders as in this preview (the window's end).
-              example: "2026-01-16T00:00:00.000Z"
-            lastExportDateTime:
-              type: string
-              description: Value `{{lastExportDateTime}}` renders as in this preview (the window's start).
-              example: "2026-01-15T00:00:00.000Z"
+        currentExportDateTime:
+          type: string
+          description: Value `{{currentExportDateTime}}` renders as in this preview (the window's end).
+          example: "2026-01-16T00:00:00.000Z"
+        lastExportDateTime:
+          type: string
+          description: Value `{{lastExportDateTime}}` renders as in this preview (the window's start).
+          example: "2026-01-15T00:00:00.000Z"

@@ -28,7 +28,9 @@ OneToMany:
       Two modes, decided by the SHAPE of the record entering the step. Object record with a child
       array under a field → set ``pathToMany`` to that field. Array record (a ``groupByFields``
       export, a CSV/file group, a script that returns an array) → leave ``pathToMany`` blank; each
-      element becomes one record. Live-verified 2026-09-10 on flows, Tools, and APIs.
+      element becomes one record. Live-verified 2026-09-10 on flows, Tools, and APIs. The one
+      exception is an array record whose children sit under a single element's field: its path
+      starts with that element's index (``0.items``) — see ``pathToMany``.
     - |-
       Blank ``pathToMany`` on an OBJECT record fails every record with code ``oneToMany_error``:
       "Failed to extract child records from oneToMany import data. Record at index 0 was not an
@@ -40,13 +42,48 @@ OneToMany:
     - |-
       Child record shape differs by mode. Path mode: each child is the array element plus
       ``_PARENT`` (the parent record minus the array). Blank/row mode: each child is the element
-      itself, with no ``_PARENT``. In both modes templates on the step reference the child as
-      ``{{record.<field>}}``; a response mapping on a one-to-many lookup merges into each child and
-      the downstream step receives the re-joined parent (path mode) or the re-joined array (row
-      mode) with every element enriched.
+      itself, with no ``_PARENT``. In both modes templates on the step reference an object child as
+      ``{{record.<field>}}``; a response mapping on a one-to-many lookup merges into each child
+      the lookup ran for, and the downstream step receives the re-joined parent (path mode) or the
+      re-joined array (row mode). A child the step's input filter excluded is re-joined without
+      the fields mapped from the lookup's ``data``.
+    - |-
+      A child that is itself an ARRAY (rows under the path, or an array element in row mode) is a
+      grouped record in either mode: templates bind it as ``rows`` (``{{rows.0.<field>}}``,
+      ``{{rows.length}}``) and ``record.*`` is undefined — ``{{record.0.<field>}}`` renders empty
+      in the HTTP body and leaves its field out of a mapping, while the record still succeeds with
+      no error. ``{{0.<field>}}`` resolves in a mapping expression but renders empty in the body;
+      ``{{rows.0.<field>}}`` works in both. Live-verified 2026-10-26 in import previews and real
+      flow runs.
+    - |-
+      An array child's ``_PARENT`` reaches mapping expressions (``{{_PARENT.<field>}}``) and
+      JSONPath extracts (``$._PARENT.<field>``; the child's own rows are ``$[0].<field>``) —
+      ``_PARENT.0.<field>`` under an index path, whose parent is an array — but every ``_PARENT``
+      path renders empty in the HTTP body template. To send a parent value, map it into a named
+      row; the mapped record is then an object, which the body reads as ``{{record.<row>}}``.
+      Live-verified 2026-10-26 in import previews and a real flow run.
+    - |-
+      The step's input filter (``filter`` on an import, ``inputFilter`` on a lookup) runs after
+      the fan-out, once per child: it decides which children the step processes. An object child
+      is read with its own fields at the root and, in path mode, the parent's fields under
+      ``_PARENT``. A child that is itself an array is read as the array of its rows — a rule on a
+      field name reads the first row, ``<index>.<field>`` the row at that index — and its rows are
+      bare on an import (a ``_PARENT`` path matches nothing, so every child is dropped) while on a
+      lookup each row carries ``_PARENT``. Children the filter drops are counted as ignored: the
+      step makes no request for them and its response mapping reads an ignored result for them
+      (see the step's filter field). The record still re-joins, with every child, and continues
+      to the next step.
+      Live-verified 2026-11-20: object children on flow, Tool and API test runs and on real flow
+      runs; array children on flow test runs and real flow runs.
+    - |-
+      A branching step (router) after a one-to-many step receives the re-joined record once and
+      routes it as a whole: a branch rule on a child's field at the root matches nothing, and a
+      rule reads one child by its index (``items.0.type``). To have a step act on some
+      children only, give that step ``oneToMany`` and an input filter on the child's field.
+      Live-verified 2026-11-20 on a flow test run and a real flow run.
     - |-
       One-to-many never batches by itself: ``batch_of_records`` appears as the HTTP body template
       root only when ``http.batchSize`` is greater than 1 (children are batched after fan-out).
-      With the default batch size the template root is ``record``.
+      With the default batch size the template root is ``record`` (``rows`` for an array child).
   default: false
   examples: [true, false]

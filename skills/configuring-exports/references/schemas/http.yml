@@ -469,6 +469,12 @@ Http:
           An export configured with an async helper cannot carry its own transform,
           output filter,
           or preSavePage hook — put that processing in the result export instead.
+        - |-
+          Never set this on a lookup (`isLookup: true`): a flow cannot save with an async
+          export among its page processors (422 `invalid_flow`). An asynchronous read is the
+          flow's source export. A test run does not execute an export that has an async helper
+          — the step reports "The flow in the test mode is not supported for asynchronous
+          export." (verified live 2026-11-11) — so check such a flow with a real run.
       examples:
         - 60a2c4e6f321d800129a1a3c
         - 5f8d43a1b9e5a80011a35f2c
@@ -536,7 +542,7 @@ Http:
 
         When this export is the first lookup of a builder-mode API with `pagination.enabled` set, it is that API's volume driver: saving the export (even unchanged) invalidates the API's issued cursors, so a caller mid-walk gets an empty final page, and removing `paging` is accepted on save but makes every call to the API fail with `400 api_pagination_source_not_paged` until paging is restored or the API's flag is turned off.
 
-        When a next page's response is identical to the previous one, paging stops: the export records an open error with code `page_response_error` ("Identical response received from next page request. No more page requests will be made.") and the run completes with the pages already read, so later pages are never exported. A request that doesn't change between pages produces this, as observed with `method: page` and the pagination variable missing from the relative URI and body; reference the variable so each request asks for the next page.
+        When a next page's response is identical to the previous one, paging stops: the export records an open error with code `page_response_error` ("Identical response received from next page request. No more page requests will be made.") and later pages are never exported. A request that doesn't change between pages produces this, as observed with `method: page` and the pagination variable missing from the relative URI and body; reference the variable so each request asks for the next page. In that probe (an HTTP export, 2026-10-23) the run completed with the pages already read when the export had no `type`, and failed when it had `type: "delta"`: the steps after the export received nothing and the checkpoint didn't move. Other `type` values weren't tried. An invoke of that export, or a virtual export of the same document, answered 200 with the records read, then `{"errors": [...]}` carrying the `page_response_error`, as two JSON objects in one `text/plain` body.
       x-celigo-ai-guidance:
         - Configuration object for navigating through multi-page API responses.
         - |-
@@ -614,8 +620,10 @@ Http:
           These fields can be used with any pagination method to detect the last page:
 
           - `lastPageStatusCode` - Detect last page by HTTP status code
-          - `lastPagePath` - JSON path to check for last page indicator
+          - `lastPagePath` - JSON path to check for last page indicator (read only on a response whose status equals `lastPageStatusCode`, except on `method: body`, which reads it on every response)
           - `lastPageValues` - Values at lastPagePath that indicate last page
+
+          With `method: body` and `mergeBodyParamsToPagingBody` not set, paging also ends when the paging `body` renders empty — see `body`.
         - |-
           ## COMMON IMPLEMENTATION PATTERNS
 
@@ -1089,7 +1097,7 @@ Http:
             - handlebars
             - graphql
           description: |-
-            Overrides the main request body for second and later page requests, typically for GraphQL or SOAP APIs that paginate through the body; leave empty when the main body works for all pages. Build it with handlebars using the `previous_page` context — `previous_page.full_response`, `previous_page.last_record`, and `previous_page.headers`.
+            Overrides the main request body for second and later page requests, typically for GraphQL or SOAP APIs that paginate through the body; leave empty when the main body works for all pages. Build it with handlebars using the `previous_page` context — `previous_page.full_response`, `previous_page.last_record`, and `previous_page.headers`. With `mergeBodyParamsToPagingBody` not set, a body that renders empty for a page sends no request and ends paging without an error.
           x-celigo-ai-guidance:
             - |-
               This field only needs to be set if subsequent page requests require a different
@@ -1114,10 +1122,38 @@ Http:
               - Using the last record's ID: `{"after": "{{previous_page.last_record.id}}", "limit": 100}`
               - Including a page number: `{"page": {{previous_page.full_response.meta.next_page}}, "pageSize": 50}`
             - Leave this field empty if the main HTTP request body can be used for all page requests.
+            - |-
+              With `method: body` and `mergeBodyParamsToPagingBody` not set, a paging body that
+              renders empty — or to whitespace only — ends paging: no request is sent for that
+              page and no error is recorded. A body wrapped whole in a block that holds only
+              while more pages remain therefore stops on the API's own signal:
+              `{{#if previous_page.full_response.hasMore}}{"cursor": "{{previous_page.full_response.nextCursor}}", "limit": 100}{{/if}}`.
+              Live-verified 2026-11-11 with virtual exports against an echo endpoint: three pages
+              were read, the block rendered empty on the next, and the export returned the
+              records with no further request and no error — the same with whitespace outside
+              the block. An empty body together with `mergeBodyParamsToPagingBody: true` was not
+              probed.
+            - |-
+              A block around ONE member of the body does not end paging: the body still renders,
+              so the request is sent with that member empty. In the same probe a body whose
+              `query` member alone sat inside the block kept requesting pages after the flag
+              turned false, each sent with `"query": ""`.
+            - |-
+              A body wrapped in a block is not JSON at rest, so it belongs to a step edited in
+              the raw HTTP form; see `http.formType` for what the GraphQL form shows for such a
+              body. Under the GraphQL form keep the body the object that form reads and end
+              paging with `lastPagePath` and `lastPageValues`.
+            - |-
+              A page with no records at the records path also ends body paging (same probe: an
+              empty array there, then no further request and no error). When the records path is
+              an object rather than the list — a GraphQL `data` — every response counts as one
+              record, so this ending never applies: in the probe the export went on requesting
+              pages past the last one.
           examples:
             - '{"query": "query($cursor: String) { items(after: $cursor) { edges { node { id name } } pageInfo { endCursor } } }", "variables": {"cursor": "{{previous_page.full_response.data.items.pageInfo.endCursor}}"}}'
             - '{"pageToken": "{{previous_page.full_response.nextPageToken}}"}'
             - '{"startIndex": {{previous_page.full_response.nextStartIndex}}, "maxResults": 100}'
+            - '{{#if previous_page.full_response.hasMore}}{"cursor": "{{previous_page.full_response.nextCursor}}", "limit": 100}{{/if}}'
         mergeBodyParamsToPagingBody:
           type: boolean
           description: |-
@@ -1200,9 +1236,15 @@ Http:
         lastPageStatusCode:
           type: integer
           description: |-
-            HTTP status code that signals the last page, replacing the default behavior of treating 404 as the end of pagination. When this status is received (any code but `200` paired with `lastPagePath`), paging stops and the response is not treated as an error. Set it when the API uses a non-404 code (such as 204 or 400) to indicate no more pages, or to `200` together with `lastPagePath` when the last page is an ordinary 200 response: then the response is parsed, its records are kept, and paging stops only when `lastPagePath` matches `lastPageValues`.
+            HTTP status code that signals the last page, replacing the default behavior of treating 404 as the end of pagination. When this status is received (any code but `200` paired with `lastPagePath`), paging stops and the response is not treated as an error. Set it when the API uses a non-404 code (such as 204 or 400) to indicate no more pages, or to `200` together with `lastPagePath` when the last page is an ordinary 200 response: then the response is parsed, its records are kept, and paging stops only when `lastPagePath` matches `lastPageValues`. With `page`, `skip` and `token` paging a `lastPagePath` condition is evaluated only on a response whose status equals this field, so leaving it unset switches that condition off; `method: body` reads `lastPagePath` on every response and needs no status code.
           x-celigo-ai-guidance:
             - Specifies a custom HTTP status code that indicates the last page of results.
+            - |-
+              Leave this unset only with `method: body`. On `page`, `skip` and `token` paging a
+              `lastPagePath`/`lastPageValues` stop condition is never evaluated without it: a `page`
+              export with `lastPagePath: json.hasMore`, `lastPageValues: ["false"]` and no status code
+              ran to its `maxPagePath` cap, while the same export with `lastPageStatusCode: 200` stopped
+              after page 1 (live-verified 2026-11-06; `skip` behaved the same).
             - |-
               ## FIELD BEHAVIOR
 
@@ -1258,7 +1300,7 @@ Http:
         lastPagePath:
           type: string
           description: |-
-            JSON path to a response-body field that signals the end of pagination, such as a "has more" flag or a cursor that empties on the last page. Must be used with `lastPageValues`, which lists the values at this path that stop paging. If the path does not exist in a response, the condition is not considered met. With `method: token` the path is read only on a response whose status code equals `lastPageStatusCode`, so pair it with `lastPageStatusCode: 200` for an ordinary last page; with `method: body` it is read on every response.
+            JSON path to a response-body field that signals the end of pagination, such as a "has more" flag or a cursor that empties on the last page. Must be used with `lastPageValues`, which lists the values at this path that stop paging. With `page`, `skip` and `token` paging the path is read only on a response whose status code equals `lastPageStatusCode` — without that field the condition is never evaluated — so pair it with `lastPageStatusCode: 200` for an ordinary last page; there, a response where the path is missing keeps paging. With `method: body` it is read on every response, and a response where the path is missing or null is itself treated as the last page.
           x-celigo-ai-guidance:
             - |-
               ## FIELD BEHAVIOR
@@ -1309,18 +1351,24 @@ Http:
               ```
 
               IMPORTANT: The path is evaluated using JSON path notation, on the responses the
-              method note below describes. If the path doesn't exist in the response, the
-              condition is not considered met.
+              method note below describes. If the path doesn't exist in the response, a
+              status-code-gated check is not met and paging continues; on `method: body` a missing
+              or null value at the path ends paging.
             - |-
-              On `method: token` the path is checked only on a response whose status code equals
-              `lastPageStatusCode`. For an API whose last page is an ordinary 200 (a GraphQL
+              On `page`, `skip` and `token` paging the path is checked only on a response whose
+              status code equals `lastPageStatusCode`; with no status code set the stop condition
+              is never evaluated and paging runs on to `maxPagePath` / `maxCountPath`, an empty
+              page or an exhausted token. For an API whose last page is an ordinary 200 (a GraphQL
               `pageInfo.hasNextPage: false`), set `lastPageStatusCode: 200` with it; without that,
-              paging goes on while the token at `path` is non-empty, so a last page that still
-              carries a cursor costs one more request. On `method: body` the path is read on
-              every response, with no status code needed. Live-verified 2026-10-22 against an echo
-              endpoint for `token` (two requests without `lastPageStatusCode`, one with 200) and
-              `body` (stopped on the second response); `page`, `skip` and `url` paging were not
-              verified.
+              token paging goes on while the token at `path` is non-empty, so a last page that
+              still carries a cursor costs one more request. On `method: body` the path is read on
+              every response, with no status code needed, and a missing or null value at the path
+              ends paging. Live-verified 2026-10-22 against an echo endpoint for `token` (two
+              requests without `lastPageStatusCode`, one with 200) and `body` (stopped on the
+              second response), and 2026-11-06 for `page` and `skip` (ran to the page cap without
+              `lastPageStatusCode`, stopped on page 1 with `200`) and for `body` without a status
+              code (stopped on page 1 on a match, on a missing path and on a null value); `url`
+              paging was not verified.
           examples:
             - meta.isLastPage
             - pagination.hasMore
@@ -1329,7 +1377,7 @@ Http:
         lastPageValues:
           type: array
           description: |-
-            Values at `lastPagePath` that stop pagination; a match on any entry ends paging. All entries are compared as exact, case-sensitive strings, even for boolean or numeric fields — use `"true"`, `"false"`, `"null"` for JSON null, or `""` for an empty string. Required when `lastPagePath` is set.
+            Values at `lastPagePath` that stop pagination; a match on any entry ends paging. Entries are matched loosely against the value at the path: letter case and surrounding whitespace are ignored, a JSON boolean matches `"true"` / `"false"`, a number matches its decimal string (`"0"`), and an empty string matches `""`. A JSON null matches nothing, not even `"null"` — on `method: body` a null or missing field is itself the last-page signal, while under a status-code check it keeps paging. Required when `lastPagePath` is set.
           x-celigo-ai-guidance:
             - Specifies which value(s) at the lastPagePath indicate the end of pagination.
             - |-
@@ -1337,7 +1385,8 @@ Http:
 
               - REQUIRED when lastPagePath is used
               - Array of string values (even for boolean or numeric comparisons)
-              - Case-sensitive matching against the value at lastPagePath
+              - Matching ignores letter case and surrounding whitespace; a JSON boolean or number
+                matches its string form
               - Multiple values create an OR condition (any match indicates last page)
             - |-
               ## IMPLEMENTATION GUIDANCE
@@ -1360,10 +1409,12 @@ Http:
               "lastPageValues": ["false", "0"]
               ```
 
-              3. For empty cursors (null/empty string means last page)
+              3. For cursors that empty on the last page (an empty string matches `""`; a
+                 cursor that turns JSON null ends `method: body` paging by itself and never
+                 matches under a status-code check)
               ```json
               "lastPagePath": "meta.nextCursor",
-              "lastPageValues": ["null", ""]
+              "lastPageValues": [""]
               ```
 
               4. For specific error messages
@@ -1375,21 +1426,28 @@ Http:
               ## TECHNICAL DETAILS
 
               - All values must be specified as strings, even for boolean or numeric comparisons
-              - JSON null should be represented as the string "null"
+              - A JSON boolean matches "true" / "false" and a number matches its decimal string;
+                letter case and surrounding whitespace are ignored (live-verified 2026-11-06 on
+                `page` paging with `lastPageStatusCode: 200` and on `body` paging without one:
+                `false`, `"FALSE"` and `" false "` each stopped against `["false"]`, `0` against
+                `["0"]`, `""` against `[""]`)
               - Empty string is represented as ""
-              - The comparison is exact and case-sensitive
+              - JSON null matches no entry, not even "null": on `method: body` a null or missing
+                value ends paging on its own; under a status-code check it keeps paging (a `page`
+                export with `lastPageStatusCode: 200`, `hasMore: null` and `["null"]` ran to its
+                page cap)
 
-              IMPORTANT: This field is only considered when the lastPagePath exists in the
-              response. Both lastPagePath and lastPageValues must be configured correctly
-              for proper pagination termination.
+              IMPORTANT: Under a status-code check this field is only consulted when the
+              lastPagePath exists in the response; on method: body a missing path ends paging
+              before the values are consulted. Both lastPagePath and lastPageValues must be
+              configured correctly for proper pagination termination.
           items:
             type: string
           examples:
             -   - "true"
             -   - "false"
                 - "0"
-            -   - "null"
-                - ""
+            -   - ""
             -   - No more pages
                 - End of results
         maxPagePath:
@@ -1700,8 +1758,12 @@ Http:
               message a `preSavePage` hook on the lookup that returns one `newErrorsAndRetryData`
               entry (`{errors: [{code: 404, message: "Product not found"}]}`) when `options.data`
               and `options.errors` are both empty failed the record with "Product not found" in
-              the same runs. Lookups on adaptors without HTTP response settings (NetSuite, for
-              example) have no `successPath`.
+              the same runs. Either error is stored at retry stage `page_processor_export`, so a
+              retry runs the lookup again (live, 2026-11-06: the retried error carried a fresh
+              reply and the connection's debug log a new request) — unlike a check in a
+              `postResponseMap` hook, whose retry replays the stored reply. Lookups on
+              adaptors without HTTP response settings (NetSuite, for example) have no
+              `successPath`.
           examples:
             - status
             - success

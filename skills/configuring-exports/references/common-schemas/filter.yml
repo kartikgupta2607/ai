@@ -408,6 +408,21 @@ Filter:
                 type: array
               - title: 'Null'
                 type: 'null'
+    rules:
+      type: array
+      readOnly: true
+      description: |-
+        The platform's copy of `expression.rules`, written beside `expression` in every response
+        of a rule-based filter for integrations built before the `expression` block existed. A
+        save rebuilds it from `expression.rules`, so a value sent here beside an `expression`
+        block changes nothing: set `expression.rules`.
+      items: {}
+    version:
+      type: string
+      readOnly: true
+      description: |-
+        The platform's copy of `expression.version`, written beside `expression` in every response
+        of a rule-based filter. Set `expression.version`.
     script:
       type: object
       description: |

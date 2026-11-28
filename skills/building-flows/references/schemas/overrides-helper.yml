@@ -1,23 +1,30 @@
 OverridesHelper:
   type: object
   description: |
-    Metadata for abstract flows that declares which fields in the flow's connections,
-    exports, imports, and routers are overridable by instance flows.
+    The abstract flow's customizable-properties selection: for the flow and each of its
+    connections, exports, imports, and routers, the properties its instance flows are meant
+    to customize. The instance form in integrator.io offers the selected properties.
 
     Only valid on abstract flows (isAbstract: true). The backend rejects this field
     on non-abstract flows. Each entry references a component of the abstract flow by
-    its ID and lists the field names that instance flows are allowed to override.
+    its ID and lists the selected property names.
+  x-celigo-ai-guidance:
+    - |-
+      The selection is not enforced on an instance's `overrides`. Verified live 2026-11-11:
+      an abstract flow whose selection listed only `preSavePage` for a lookup step accepted an
+      instance whose `overrides.exports[]` entry for that step set `hooks.postResponseMap`
+      (201), and a run of that instance executed the instance's script.
   properties:
     fields:
       type: array
-      description: Flow-level field names that instance flows may override (e.g., "schedule", "timezone")
+      description: Flow-level properties selected as customizable for instance flows (e.g., "schedule", "timezone")
       items:
         type: string
       examples: [["schedule", "timezone", "settings"]]
     connections:
       type: array
       description: |
-        Declares which connection-level fields are overridable per abstract flow connection.
+        The properties selected as customizable for each connection of the abstract flow.
       items:
         type: object
         properties:
@@ -26,13 +33,13 @@ OverridesHelper:
             description: ID of the connection in the abstract flow
           fields:
             type: array
-            description: Field names on this connection that instance flows may override
+            description: Properties of this connection selected as customizable for instance flows
             items:
               type: string
     exports:
       type: array
       description: |
-        Declares which export-level fields are overridable per abstract flow export.
+        The properties selected as customizable for each export or lookup step of the abstract flow.
       items:
         type: object
         properties:
@@ -41,13 +48,17 @@ OverridesHelper:
             description: ID of the export in the abstract flow
           fields:
             type: array
-            description: Field names on this export that instance flows may override
+            description: |-
+              Properties of this export or lookup step selected as customizable for instance
+              flows: paths into the export's own fields (such as `_connectionId` or
+              `http.relativeURI`) and names of the step's processors and hooks (such as
+              `transformation`, `outputFilter`, or `preSavePage`).
             items:
               type: string
     imports:
       type: array
       description: |
-        Declares which import-level fields are overridable per abstract flow import.
+        The properties selected as customizable for each import step of the abstract flow.
       items:
         type: object
         properties:
@@ -56,13 +67,17 @@ OverridesHelper:
             description: ID of the import in the abstract flow
           fields:
             type: array
-            description: Field names on this import that instance flows may override
+            description: |-
+              Properties of this import step selected as customizable for instance flows:
+              paths into the import's own fields (such as `_connectionId` or `http.body`) and
+              names of the step's mappings, filters, and hooks (such as `importMapping`,
+              `inputFilter`, `preMap`, or `postResponseMap`).
             items:
               type: string
     routers:
       type: array
       description: |
-        Declares which router-level and branch-level fields are overridable per abstract flow router.
+        The router-level and branch-level properties selected as customizable for each router of the abstract flow.
       items:
         type: object
         properties:
@@ -71,12 +86,12 @@ OverridesHelper:
             description: ID of the router in the abstract flow
           fields:
             type: array
-            description: Field names on this router that instance flows may override
+            description: Properties of this router selected as customizable for instance flows
             items:
               type: string
           branches:
             type: array
-            description: Per-branch override declarations
+            description: The properties selected as customizable for each branch of this router
             items:
               type: object
               properties:
@@ -85,6 +100,6 @@ OverridesHelper:
                   description: Index or ID of the branch in the abstract flow router
                 fields:
                   type: array
-                  description: Field names on this branch that instance flows may override
+                  description: Properties of this branch selected as customizable for instance flows
                   items:
                     type: string

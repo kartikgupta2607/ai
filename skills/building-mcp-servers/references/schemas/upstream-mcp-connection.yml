@@ -8,7 +8,8 @@ UpstreamMcpConnection:
     the integrator.io UI, fills the read-only catalog fields (`discoveryStatus`,
     `lastDiscoveredAt`, and each row's `title`, `description`, `annotations`,
     `discoveredAt`, `unavailable`). A write carries only `_connectionId`,
-    `alias`, and each row's `upstreamName`, `disabled`, `overrides`, and `uri` —
+    `alias`, `requiresEndUserCredentials`, and each row's `upstreamName`,
+    `disabled`, `overrides`, `uri`, and (tool rows) `requiresEndUserCredentials` —
     every other field is taken from the stored row, and a write that includes
     `upstreamMcpConnections` re-approves the current upstream definitions
     (`approvedDefinitionHash` is re-pinned and `changedSinceApproval` reset).
@@ -30,11 +31,6 @@ UpstreamMcpConnection:
       resources combined: the 501st row fails the whole PUT with 422
       "mcp_upstream_max_capabilities" on upstreamMcpConnections[{index}].
       The cap is per attachment, so a second connection gets its own 500.
-    - |-
-      Set alias explicitly when the connection name is longer than 32
-      characters: the alias derived from the name on first attach fails the
-      PUT with 422 "size_limit_exceeded" on upstreamMcpConnections.{index}.alias,
-      the same response an explicit alias of 33 or more characters gets.
   required:
     - _connectionId
   properties:
@@ -45,6 +41,20 @@ UpstreamMcpConnection:
       description: |-
         Connection of type `mcp` that holds the upstream server URL and
         credentials. Each connection can be attached to a server once.
+        When the upstream server rejects a proxied `tools/call`, `prompts/get`,
+        or `resources/read`, the MCP client gets a JSON-RPC error with HTTP
+        status 200: -32008 `Upstream server denied access` for an upstream 403,
+        -32004 `Upstream rate limit exceeded` for a 429, and for a 401 either
+        -32007 `Upstream connection requires re-authorization` or -32603. A
+        `token` or `custom` connection answers -32007. An `oauth` connection
+        first refreshes its token and retries once: -32007 when the connection
+        can't be refreshed (for example, it holds no refresh token), when the
+        token endpoint rejects the grant (for example, with 400), or when the
+        retry is still 401; -32603 when the refresh fails any other way, such
+        as the token endpoint answering 5xx. -32007, -32008, and -32004 carry
+        this id in
+        `error.data._connectionId`; -32603, which an upstream 5xx also answers,
+        carries no `error.data`.
       examples: ["6a6655fce52f3c30d0a53926"]
     alias:
       type: string
@@ -53,19 +63,44 @@ UpstreamMcpConnection:
       description: |-
         Short handle that namespaces the upstream's capabilities on this
         server. Lowercased on save and unique per server (case-insensitive) —
-        a duplicate is rejected with 422 `mcp_upstream_duplicate_alias`, an
-        invalid character with 422 `mcp_upstream_invalid_alias_charset`, and
-        an over-long value with 422 `size_limit_exceeded`.
-        Derived from the connection name when omitted on the first attach, so
-        a name longer than the alias cap needs an explicit alias.
+        a duplicate is rejected with 422 `mcp_upstream_duplicate_alias` and an
+        invalid character with 422 `mcp_upstream_invalid_alias_charset`.
+        Derived from the connection name when omitted on the first attach,
+        with every character other than a letter, digit, `-`, or `_` turned
+        into `_`. POST, PUT, and PATCH shorten a sent or derived value over 32
+        characters to 32 instead of rejecting it: the cut drops trailing `_`
+        (and, for a sent value, trailing `-`), and a `_2`, `_3`, … suffix
+        within the 32 settles a collision with another alias on the server.
+        A PATCH of `/upstreamMcpConnections/{index}/alias` goes through the
+        same checks as PUT, so it is lowercased and draws the same 422s.
       examples: ["deepwiki", "crm_tools"]
+    requiresEndUserCredentials:
+      type: boolean
+      default: false
+      description: |-
+        When true, a proxied call from a Celigo end user runs on that user's own credentials for
+        `_connectionId` instead of the shared connection. Accepted only on a server that uses
+        Celigo OAuth (`oauth.useCeligoOauth: true`); otherwise the save fails with 422
+        `mcp_upstream_end_user_auth_requires_celigo_oauth`. A PUT whose row omits it keeps the
+        stored value — only an explicit `false` clears it — and PATCH does not reach it. A row
+        last saved before the field existed omits it.
+      examples: [false]
     name:
       type: string
       readOnly: true
       description: |-
         Current display name of the attached connection, joined from the
-        connection record on GET and list responses.
+        connection record on GET, list, POST, and PUT responses.
       examples: ["DeepWiki MCP"]
+    endUserConnectionCount:
+      type: integer
+      minimum: 0
+      readOnly: true
+      description: |-
+        Number of end users' own connections made from this attached
+        connection. Returned only by `GET /v1/mcpservers/{_id}` — the list
+        and the POST and PUT responses leave it off.
+      examples: [3]
     discoveryStatus:
       type: string
       readOnly: true
@@ -94,7 +129,7 @@ UpstreamMcpConnection:
         whose `upstreamName` disappears from the upstream catalog is kept and
         flagged `unavailable`.
       items:
-        $ref: "#/UpstreamItem"
+        $ref: "#/UpstreamToolItem"
     prompts:
       type: array
       description: Upstream prompts this server exposes, whitelisted by `upstreamName`.
@@ -122,8 +157,11 @@ UpstreamItem:
       readOnly: true
       description: |-
         Server-generated identifier for the row — the grant handle referenced
-        as `tool:<_id>` in resource grants and, for tool rows, accepted in
-        `permissionSets[]._toolIds`. Preserved across PUT while the row keeps
+        in resource grants as `tool:<_id>` for a tool row and `prompt:<_id>`
+        for a prompt row. Tool rows are also accepted in
+        `permissionSets[]._toolIds`. A `tool:<_id>` grant on a prompt row
+        still validates but does not open the prompt for end-users on the
+        MCP endpoint. Preserved across PUT while the row keeps
         its `upstreamName`.
       examples: ["6ab1ebd05af4c5a3ea6b0959"]
     upstreamName:
@@ -139,7 +177,7 @@ UpstreamItem:
       default: false
       description: |-
         When true, the row stays attached but is hidden from MCP clients and
-        does not count toward the server's enablement rule.
+        does not count toward `enabledItemCount`.
       examples: [false]
     overrides:
       $ref: "#/UpstreamItemOverrides"
@@ -166,8 +204,7 @@ UpstreamItem:
       default: false
       description: |-
         When true, the last discovery run no longer found this `upstreamName`
-        in the upstream catalog; the row is kept but not served and does not
-        count toward enablement.
+        in the upstream catalog; the row is kept but not served.
       examples: [false]
     discoveredAt:
       type: string
@@ -204,6 +241,22 @@ UpstreamItem:
         Name MCP clients see instead of `upstreamName`. Present only when
         `overrides.name` is set.
       examples: ["ask_about_repo"]
+
+UpstreamToolItem:
+  allOf:
+    - $ref: "#/UpstreamItem"
+    - type: object
+      description: |-
+        One whitelisted upstream tool. Same shape as a prompt row plus a per-tool
+        end-user credential setting.
+      properties:
+        requiresEndUserCredentials:
+          type: boolean
+          description: |-
+            When true or false, overrides the attachment's `requiresEndUserCredentials`
+            for this tool; unset inherits it. No default, so unset stays distinct from
+            `false`. A PUT whose row omits it keeps the stored value.
+          examples: [true]
 
 UpstreamResourceItem:
   allOf:

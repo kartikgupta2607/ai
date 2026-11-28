@@ -69,3 +69,8 @@ ToolBase:
           PUT with `draft: false` clears the flag and the expiry, promoting the draft to a
           permanent tool. PUT with `draft: true` on a non-draft tool is silently ignored,
           and a PUT that omits the field leaves an existing draft flag unchanged.
+        - |-
+          Clearing the flag approves the draft, and the approval belongs to the person
+          the draft was created for: in integrator.io they give it by accepting the
+          draft. An agent acting for that person never sends `draft: false` for them,
+          and never gives them this request as the way to keep a draft.

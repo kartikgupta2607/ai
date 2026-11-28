@@ -1,0 +1,100 @@
+ExportPreviewResponse:
+  type: object
+  description: |-
+    Envelope returned by `POST /v1/exports/preview` and the scoped variants
+    `/v1/integrations/{_integrationId}/exports/preview` and
+    `/v1/integrations/{_integrationId}/flows/{_flowId}/exports/preview`.
+    Carries per-stage diagnostics alongside the sampled records.
+  properties:
+    data:
+      type: array
+      description: |-
+        Final sampled records produced by the preview — the output of the last
+        stage, without the wrappers the transform, filter and hook stages put
+        around it, so records the export's output filter dropped are not here.
+        Absent from the zero-record answers described under `stages`.
+      items: {}
+    dataURIs:
+      type: array
+      description: |-
+        Links to the records in the source system. On an export preview, one
+        entry per record in `data`: a link to the record when one is available
+        (for example the export's `dataURITemplate` rendered for that record),
+        otherwise `null`, as on an HTTP export without a template; absent when
+        the preview returned no records and when a `mockOutput` in the request
+        body answered.
+      items:
+        type: [string, 'null']
+    dataRecordTraceKeys:
+      type: array
+      description: |-
+        Trace keys for the records in this preview — one per record,
+        correlating stage outputs to their source record; `null` for a record
+        that has no key. Absent when the preview returned no records and
+        captured no keys, and when a `mockOutput` in the request body answered.
+      items:
+        type: [string, 'null']
+    stages:
+      type: array
+      description: |-
+        Ordered list of pipeline stages the preview traversed. The preview
+        runs the export's pipeline, not just the parse: `request` and `raw`
+        for HTTP exports; `parse` for a live read that returned records, and
+        as the only stage when a `mockOutput` in the request body answers;
+        `group` when the export groups records (grouped records are bare
+        arrays of the grouped rows). After a live `parse`, the stages the
+        export configures follow: the transform (`transformTwoDotZero` for
+        Transformation 2.0 rules, `transform` for version 1 rules), the
+        output filter (`outputFilter`, where each record it drops carries
+        `isIgnored: true`) and the preSavePage hook (`preSavePageHook`, which
+        receives only the records the filter kept). Top-level `data` holds
+        the records the last of them kept, unwrapped. Each stage carries its `data[]`
+        output and any `errors[]` raised at that stage. A live read that
+        selects no records has been observed without a `parse` stage or
+        top-level `data` on two adaptors: an HTTP export returns only `request`
+        and `raw`, and a NetSuite RESTlet search returns an empty object. Treat
+        those as zero records, not as a failed preview.
+      items:
+        type: object
+        description: One pipeline stage's diagnostic and output envelope.
+        properties:
+          name:
+            type: string
+            description: Stage identifier (e.g. `request`, `raw`, `parse`, `transformTwoDotZero`, `outputFilter`, `preSavePageHook`).
+          data:
+            description: |-
+              Stage output. Shape varies — `raw` carries the source
+              response, `parse` (and `group`) carry the extracted records.
+              The transform and `outputFilter` stages carry one
+              `{data, errors}` entry per record (a dropped record adds
+              `isIgnored: true`), and `preSavePageHook` one entry for the
+              page: the object the hook returned.
+            oneOf:
+              - title: Array
+                type: array
+                items: {}
+              - title: Object
+                type: object
+                additionalProperties: true
+              - title: "Null"
+                type: 'null'
+          errors:
+            type: [array, 'null']
+            description: Errors raised at this stage, or `null` when clean.
+            items:
+              type: object
+              additionalProperties: true
+    errors:
+      type: array
+      description: |-
+        Absent from a 200 response. A preview that fails answers 422 instead,
+        with its errors in that body.
+      items:
+        type: object
+        additionalProperties: true
+    traceKeysDuplicate:
+      type: boolean
+      description: |-
+        When true, two or more records in this preview share a trace key, so
+        the export's `traceKeyTemplate` does not identify records uniquely.
+        Absent whenever `dataRecordTraceKeys` is absent.

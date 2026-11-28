@@ -31,7 +31,7 @@ Request:
         - van
         - rest
       x-enumDescriptions:
-        netsuite: NetSuite ERP connection using token-based authentication (TBA).
+        netsuite: NetSuite ERP connection, authenticated with token-based authentication (TBA) or OAuth 2.0 (`netsuite.authType`).
         salesforce: Salesforce CRM connection with OAuth 2.0 authentication.
         ftp: FTP, SFTP, or FTPS file transfer connection.
         s3: Amazon S3 cloud storage connection, authenticated with an access key pair or an AWS IAM role (`s3.authType`).
@@ -43,12 +43,18 @@ Request:
         filesystem: Local or network filesystem connection (requires an Agent).
         mcp: MCP (Model Context Protocol) server connection.
         dynamodb: Amazon DynamoDB NoSQL database connection.
-        jdbc: JDBC connection for relational systems without a native `rdbms` type (Databricks, Db2, Workday, NetSuite JDBC) and for the driver-specific paths `jdbc.type` names (Oracle Thin, SQL Server with Active Directory); Redshift, BigQuery and Snowflake are `rdbms` types.
+        jdbc: JDBC connection for relational systems without a native `rdbms` type (Databricks, Db2, Workday, NetSuite JDBC) and for the driver-specific paths `jdbc.type` names — Oracle Thin, which is the connection of NetSuite Analytics Warehouse (NSAW) and Oracle Autonomous Database, and SQL Server with Active Directory; Redshift, BigQuery and Snowflake are `rdbms` types.
         van: Value-Added Network connection for EDI document exchange.
         rest: REST connection driven by a pre-built HTTP Connector template. Deprecated — use `http` instead.
     externalId:
       type: string
-      description: External identifier for the connection, often used to correlate it with a record in a third-party system.
+      description: |-
+        External identifier for the connection, often used to correlate it with a record in a
+        third-party system. On a connection inside an Integration App tile (`_connectorId` set)
+        it is the app's own stamp on the connections its install created (`shopify_connection`,
+        …), and the platform refuses the DELETE of a tile connection that carries it or
+        `_sourceId`; a tile connection with neither was added by a user and deletes normally.
+        The name lock on tile connections follows `_connectorId`, not this field.
       examples: ["erp-conn-001"]
     assistant:
       type: string
@@ -59,6 +65,9 @@ Request:
         with 422 `enum` — and uses it to resolve the HTTP connector link on every save (see
         `http._httpConnectorId`), so send it only when the application really is a legacy
         adaptor: on an Azure Data Lake Storage Gen2 connection it drops the connector ids.
+        `celigofilestorage` (Celigo File storage) is such a slug: the save links the connector
+        `GET /v1/httpconnectors` lists with that `legacyId`, and the connection must carry
+        `accessScope` (see below).
       examples: ["shopify"]
       x-celigo-ai-guidance:
         - |-
@@ -74,11 +83,18 @@ Request:
     accessScope:
       type: object
       description: |-
-        What a Celigo APIs connection (`assistant: integratorceligoapi`) may reach in the
-        account: the account's custom APIs, listeners, standard integrator.io APIs and Celigo
-        Storage folders. A Celigo APIs connection cannot be created without it; an update that
-        omits it leaves the stored scope unchanged. The connection document never carries it —
-        the stored scope is read from `GET /v1/accessScope/connections/{_id}`.
+        What a Celigo APIs connection (`assistant: integratorceligoapi`) or a Celigo File
+        storage connection (`assistant: celigofilestorage`) may reach in the account: the
+        account's custom APIs, listeners, standard integrator.io APIs and Celigo Storage
+        folders. Neither connection can be created without it — the rule keys on the body
+        `assistant`. The caller's role decides which scope a save may carry: the account
+        owner and administrators save any `type`, and their update that omits `accessScope`
+        leaves the stored scope unchanged; a user with Manage access saves `integration`
+        only, for integrations they manage, and re-sends it on every PUT. A File
+        storage connection's `custom` scope takes Celigo Storage folders only: a non-empty
+        `_apiIds` or `_exportIds` on it fails with 422 `invalid_access_scope` ("<field> is not
+        supported on access scopes for this connector."). The connection document never
+        carries it — the stored scope is read from `GET /v1/accessScope/connections/{_id}`.
       required: [type]
       properties:
         type:
@@ -87,7 +103,7 @@ Request:
           x-enumDescriptions:
             full: Every custom API, listener and standard integrator.io API in the account, and every Celigo Storage folder
             custom: Only the APIs, listeners and Celigo Storage folders listed in the sibling arrays
-            integration: Only the integrations listed in `_integrationIds`
+            integration: The standard integrator.io APIs for the resources of the integrations listed in `_integrationIds`, and those integrations' system folders in Celigo Storage
           description: |-
             How much of the account the connection may reach. Each type takes its own
             selections: `full` takes none, `custom` takes APIs, listeners and folder paths,
@@ -112,7 +128,11 @@ Request:
             type: string
             format: objectId
             x-celigo-refModel: integrations
-          description: Integrations whose resources the connection may reach. Present when `type` is `integration`.
+          description: |-
+            Integrations whose resources — the integration, its flows and their errors, its
+            exports, imports and connections — the connection may reach through the standard
+            integrator.io APIs, and whose system folders it may read and write in Celigo
+            Storage. Present when `type` is `integration`.
         _fileStoragePaths:
           type: array
           items:
@@ -146,9 +166,40 @@ Request:
       x-celigo-ai-guidance:
         - |-
           A Celigo APIs connection POST without `accessScope` fails with 422 `missing_required_field`
-          ("Scope is required for this connection. Please select Full access or Custom."); a PUT
-          without it is accepted and the stored scope is unchanged. A `type` outside the enum fails
-          with 422 `enum`.
+          ("Scope is required for this connection. Please select Full access or Custom."). As the
+          account owner and as an administrator, a PUT without it answered 200 on a connection of
+          each stored scope, on both connectors, and the stored scope read back unchanged. A
+          `type` outside the enum fails with 422 `enum`.
+        - |-
+          The caller's role limits the `type` a save may carry, on both connectors. As the account
+          owner and as an administrator, POST of a Celigo APIs connection and of a Celigo File
+          storage connection with `full`, with `custom` and with `integration` answered 201. As a
+          user with Manage access — account-wide, on one integration, or Monitor account-wide
+          with Manage on one integration — POST with `type: integration` listing an integration
+          the user manages answered 201, and POST with `full` answered 403 `access_restricted`
+          ("You don't have the right to perform this action. Please contact your account
+          administrator to receive manage permission for this account."); with account-wide
+          Manage, POST with `custom` or with no `accessScope` answered the same 403. `integration`
+          listing an integration the user does not manage answered 403 `invalid_access`. For
+          such a caller send `integration` with the integrations the connection is for; a `full`
+          or `custom` connection is the account owner's or an administrator's to create.
+        - |-
+          For a user with Manage access, a PUT of a connection whose stored scope is `full` or
+          `custom` answered that 403 whether the body left `accessScope` out or carried
+          `integration`, and a PUT of an `integration` connection answered 200 only when the
+          body carried `accessScope` with `type: integration` — without it, or with `full` or
+          `custom`, the same 403. Read the stored scope and re-send it on every PUT. `PATCH` of
+          `/name` answered 204 on a connection of each scope and `PATCH` of
+          `/http/concurrencyLevel` on a `full` and an `integration` connection; DELETE answered
+          204 on an `integration` connection and the same 403 on a `full` or `custom` one. As an
+          administrator, DELETE of a `full` and of a `custom` connection answered 204.
+        - |-
+          That 403 sentence asks for manage permission whatever the caller holds: a caller who
+          already has Manage access received it on each refused request above. A user with
+          Monitor access and no Manage grant was refused each create — of an ordinary connection
+          and of a Celigo APIs connection — with 403 `access_restricted` and another sentence
+          ("The role which you are associated with doesn't have the required permissions to
+          perform the action.").
         - |-
           Each mismatch between `type` and the selections fails with 422 `invalid_access_scope` and
           names the field: `full` with any of `_apiIds`, `_exportIds`, `_integrationIds` or
@@ -159,23 +210,79 @@ Request:
         - |-
           Choose the narrowest `type` the connection's use needs: a flow that reads or writes Celigo
           Storage files → `custom` with the folder paths it uses (`/Reports/` grants that folder and
-          everything beneath it); specific custom APIs or listeners → `custom` with their ids; the
-          standard integrator.io REST APIs → `full`. A `custom` connection with `_fileStoragePaths`
-          omitted or empty has no storage access — its storage step fails at run time with 401.
+          everything beneath it), or `integration` when the files live in that integration's
+          system folder; specific custom APIs or listeners → `custom` with their ids; a
+          flow that reads one integration's resources through the standard integrator.io REST APIs
+          (its flows, a flow's errors) → `integration` with that integration; the standard APIs
+          across the account → `full`. A `custom` connection with `_fileStoragePaths` omitted or
+          empty has no storage access — its storage step fails at run time with 401.
+        - |-
+          Through an `integration` connection of either connector, `GET /v1/storage/items?type=folder`
+          at the account root listed only the listed integration's system folder. Listing inside
+          that folder answered 200, `POST /v1/storage/items` with it as `_parentId` answered 201,
+          and `POST /v1/storage/files/initiateUpload` into it answered 200. The same list and
+          create against another integration's system folder and against a folder at the account
+          root, a create at the account root itself, and an upload into a folder at the root
+          each answered 403 `STORAGE_INTEGRATION_ACCESS_DENIED` ("You do not have access to this
+          folder").
+        - |-
+          Through a `custom` connection listing one listener, `POST /v1/exports/{_id}/data` to
+          that listener answered 204, while `GET /v1/exports/{_id}` for the same listener,
+          `GET /v1/connections`, `GET /v1/integrations/{_id}`, `GET /v1/flows`,
+          `GET /v1/flows/{_id}/errors`, `GET /v1/imports` and `GET /v1/jobs` were each refused
+          with 401 `access_restricted` ("You don't have the required permissions to perform the
+          action."). Through an `integration` connection the same reads answered 200
+          (`GET /v1/jobs` asks for the integration `_id`: 400 `query_param_required`), and
+          `GET /v1/integrations/{_id}` for another integration answered 403 `invalid_access`.
+        - |-
+          An id in `_exportIds` that is not a listener is accepted and dropped: the stored scope
+          comes back without it.
         - |-
           The connection document never carries `accessScope`; read the stored scope from
           `GET /v1/accessScope/connections/{_id}` (`scope`, `apis`, `exports`, `integrations`,
           `fileStoragePaths`) rather than inferring it from the document.
+        - |-
+          A Celigo File storage connection (`type: http`, `assistant: celigofilestorage`) POST
+          without `accessScope` fails with 422 `missing_required_field` ("Scope is required for
+          this connection. Please select Full access or Custom."): send `{type: full}`,
+          `{type: custom, _fileStoragePaths: [...]}` or `{type: integration, _integrationIds: [...]}`.
+          A non-empty `_apiIds` or `_exportIds` on
+          it fails, on POST and PUT, with 422 `invalid_access_scope` ("_apiIds is not supported
+          on access scopes for this connector."). The save fills `http._httpConnectorId` and
+          `http._httpConnectorVersionId` from the connector whose `legacyId` is
+          `celigofilestorage` in `GET /v1/httpconnectors` — look the id up there rather than
+          hardcoding one.
     _agentId:
       type: string
       format: objectId
       x-celigo-refModel: agents
       description: |-
-        Reference to a Celigo on-premise Agent. Required for types that need local network or
-        filesystem access (filesystem, jdbc agent/activedirectory, Oracle rdbms, and on-premise
-        mongodb). The agent establishes a secure tunnel between the on-premise environment and
-        integrator.io.
+        Reference to a Celigo on-premise Agent. Types that run on an agent (filesystem, jdbc
+        agent/activedirectory, Oracle rdbms, and on-premise mongodb) need one binding — this
+        agent, or an agent group through `_agentGroupId`; either satisfies the requirement
+        (live-verified for filesystem, jdbc `agent` and `activedirectory`, and Oracle: with
+        neither id the POST answers 422 `agent_mode_only`; with `_agentGroupId` alone it does not).
+        The agent establishes a secure tunnel between the on-premise environment and
+        integrator.io. The connection form writes one of the two ids and omits the other; a
+        connection never carries both. Microsoft Fabric Warehouse connections (`rdbms.type`
+        `fabric`) are cloud-only: a create or update that sets `_agentId` fails with 422
+        `invalid_field_value` on `_agentId`.
       examples: ["5f8d43a1b9e5a80011a35f2c"]
+    _agentGroupId:
+      type: string
+      format: objectId
+      x-celigo-refModel: agentgroups
+      description: |-
+        On-premise agent group that serves this connection instead of a single
+        `_agentId`; a connection binds one or the other, never both — the connection
+        form writes one id and omits the other. Requests go to the first healthy
+        member in the group's priority order (source-only: the dispatch rule the
+        platform implements), so one host failing does not stop the flow. On an
+        account whose license does not include agent groups, sending it fails with
+        422 `agent_groups_subscription_required` — "Your license does not support
+        the agent groups feature." (live-verified); an id that names no group adds
+        422 `invalid_ref` on `_agentGroupId` to the same response.
+      examples: ["6650a1b2c3d4e5f60718293a"]
     _borrowConcurrencyFromConnectionId:
       type: string
       format: objectId
@@ -185,7 +292,8 @@ Request:
         connection's traffic counts against the referenced connection's limit instead of its own,
         and its own concurrency and auto-recovery settings have no effect. One level only: the
         referenced connection may not itself borrow, and a connection that others borrow from
-        cannot start borrowing. A connection cannot reference itself (422).
+        cannot start borrowing. Pointing it at the connection itself fails with 422
+        `connection_borrows_from_another`, and an id that matches no connection with 422 `invalid_ref`.
       examples: ["615dfa0742763671275b70ab"]
       x-celigo-ai-guidance:
         - |-
@@ -213,6 +321,8 @@ Request:
         such an `http` create that sends only `concurrencyLevel: 10` is stored at 25. To keep the
         `concurrencyLevel` you send, create with this `false`.
         Recovery never runs on `ftp` connections: FTP errors aren't treated as rate limits.
+        A rate limit hit by a Tool invocation (`POST /v1/tools/{_id}/invoke`) or an export preview
+        (`POST /v1/exports/preview`) leaves the connection's concurrency as it is.
     __integrationIds:
       type: array
       maxItems: 100
@@ -254,9 +364,10 @@ Request:
       x-celigo-ai-guidance:
         - |-
           List only the credential and tenant fields that differ per end user, never a path the
-          account owns: `type`, `_agentId`, `wrapper._stackId`, or any `<adaptor>._iClientId`
+          account owns: `type`, `_agentId`, `_agentGroupId`, `wrapper._stackId`, or any `<adaptor>._iClientId`
           (e.g. `http._iClientId`) fails the save with 422
-          `mcp_end_user_provided_field_not_allowed`.
+          `mcp_end_user_provided_field_not_allowed` (live-verified for `_agentGroupId`:
+          "_agentGroupId is managed by the account owner and cannot be requested from an end user.").
         - |-
           This is the only MCP end-user field writable through `/v1/connections`; the child
           connections themselves are created by the end-user setup page, and `connectionRole:
@@ -380,6 +491,14 @@ Request:
               required: [authType]
             then:
               required: [account]
+            else:
+              if:
+                properties:
+                  authType:
+                    const: oauth
+                required: [authType]
+              then:
+                required: [account]
   else:
     if: { properties: { type: { const: salesforce } }, required: [type] }
     then: { required: [salesforce] }
@@ -394,7 +513,11 @@ Request:
           then: { required: [http] }
           else:
             if: { properties: { type: { const: rdbms } }, required: [type] }
-            then: { required: [rdbms] }
+            then:
+              required: [rdbms]
+              if: { properties: { rdbms: { properties: { type: { const: fabric } }, required: [type] } }, required: [rdbms] }
+              then:
+                not: { required: [_agentId] }
             else:
               if: { properties: { type: { const: mongodb } }, required: [type] }
               then: { required: [mongodb] }
@@ -402,10 +525,13 @@ Request:
                 if: { properties: { type: { const: as2 } }, required: [type] }
                 then: { required: [as2] }
                 else:
-                  # filesystem runs on a Celigo Agent: the connection-level _agentId is API-required
-                  # (422 "The file system connection requires Agent").
+                  # filesystem runs on a Celigo Agent: the API requires a binding (422 "The file
+                  # system connection requires Agent") — a single agent (_agentId) or an agent
+                  # group (_agentGroupId); the connection form writes one and omits the other.
                   if: { properties: { type: { const: filesystem } }, required: [type] }
-                  then: { required: [filesystem, _agentId] }
+                  then:
+                    required: [filesystem]
+                    anyOf: [{ required: [_agentId] }, { required: [_agentGroupId] }]
                   else:
                     if: { properties: { type: { const: mcp } }, required: [type] }
                     then: { required: [mcp] }
@@ -416,12 +542,14 @@ Request:
                         if: { properties: { type: { const: jdbc } }, required: [type] }
                         then:
                           required: [jdbc]
-                          # _agentId is API-enforced for the agent + activedirectory jdbc types (POST 422
-                          # agent_mode_only). Request-only (cross-level), matching filesystem.
+                          # A binding is API-enforced for the agent + activedirectory jdbc types (POST
+                          # 422 agent_mode_only): a single agent (_agentId) or an agent group
+                          # (_agentGroupId). Request-only (cross-level), matching filesystem.
                           if:
                             properties: { jdbc: { properties: { type: { enum: [agent, activedirectory] } }, required: [type] } }
                             required: [jdbc]
-                          then: { required: [_agentId] }
+                          then:
+                            anyOf: [{ required: [_agentId] }, { required: [_agentGroupId] }]
                         else:
                           if: { properties: { type: { const: van } }, required: [type] }
                           then: { required: [van] }

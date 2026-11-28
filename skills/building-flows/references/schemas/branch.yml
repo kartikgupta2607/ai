@@ -10,10 +10,10 @@ Branch:
       type: string
       description: |
         Label for the branch, unique within the router. On a branching router it is shown on
-        the Flow Builder canvas, appears in logs, and is the value a routing script returns to
-        pick the branch — make it describe the branch's purpose. The single branch of a
-        pass-through router has no visible label; the server stores an empty string when the
-        name is omitted.
+        the Flow Builder canvas and appears in logs — make it describe the branch's purpose. A
+        routing script picks branches by their position in the router's `branches`, never by
+        name. The single branch of a pass-through router has no visible label; the server
+        stores an empty string when the name is omitted.
       examples: ["enterprise_customers", "high_priority", "needs_approval"]
     description:
       type: string
@@ -37,14 +37,18 @@ Branch:
         Only used when the router's `routeRecordsUsing` is `input_filters`.
         Records matching these criteria will be routed to this branch. A branch
         without an `inputFilter` matches every record, so under
-        `first_matching_branch` the catch-all branch goes last.
+        `first_matching_branch` the catch-all branch goes last. Each record is
+        evaluated once, as a whole: after a step with `oneToMany` it is the record
+        with its children re-joined, never one child.
 
         Send `version` and `rules` directly on `inputFilter` — not inside the
         `{type: "expression", expression: {...}}` wrapper that export and import
-        filters use. A wrapped filter is saved without an error, but the branch is
-        stored with no `inputFilter` and takes every record.
-      x-celigo-ai-guidance:
-        - Read the flow back after saving a branching router and check that each filtered branch still has its `inputFilter`; a filter sent in the export-filter wrapper is dropped on save without an error.
+        filters use. A wrapped filter (no top-level `rules`, and a non-empty
+        `expression` or `script` object) fails the save with 422
+        `invalid_router_branch_input_filter` "routers[0].branches[1].inputFilter uses
+        the export/import filter wrapper { type, expression }. A router branch
+        inputFilter takes the expression fields directly: { version: "1", rules: [...] }."
+        The same check covers the branches under `overrides.routers`.
       properties:
         version:
           type: string

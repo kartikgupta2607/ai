@@ -74,8 +74,10 @@ ApiResponse:
 
         Send `version` and `rules` directly on `inputFilter`, not inside the
         `{type: "expression", expression: {...}}` wrapper that export and import filters use. A
-        wrapped filter is saved without an error, but the response is stored with no
-        `inputFilter`, so it matches every request that reaches it.
+        wrapped filter (no top-level `rules`, and a non-empty `expression` or `script` object)
+        fails the save with 422 `invalid_response_input_filter` "builder.responses[0].inputFilter
+        uses the export/import filter wrapper { type, expression }. An API response inputFilter
+        takes the expression fields directly: { version: "1", rules: [...] }."
       properties:
         version:
           type: string
@@ -94,24 +96,60 @@ ApiResponse:
             - |-
               Array-based DSL where the first element is an operator (e.g., "equals", "and", "or"),
               followed by operands which can be nested expressions.
+    schemaMode:
+      type: string
+      enum: [manual, json]
+      x-enumDescriptions:
+        manual: Last edited on the Manual tab.
+        json: Last edited on the Schema tab. Set this when creating the API from Postman or an agent.
+      description: |-
+        Editor tab that last saved this response's `bodySchema`. Set to `json` when creating or
+        updating the API from Postman or an agent. When set, the save validates this response's
+        `bodySchema` as an OpenAPI 3.0.3 Schema Object with `type: object` or `array` at the root
+        and fails with 422 `invalid_body_schema` ("Invalid builder.responses[0].bodySchema - /type
+        must be string"), `unsupported_schema_keyword` ("builder.responses[0].bodySchema: keyword
+        'patternProperties' is not supported in API body schemas."), or
+        `invalid_body_schema_root_type` ("builder.responses[0].bodySchema must have type object or
+        array at the root."). It does not turn call-time validation on — that is
+        `isSchemaValidationActive`. Omit it to keep a legacy `bodySchema` unvalidated.
+      examples: ["json"]
+      x-celigo-ai-guidance:
+        - |-
+          Set `schemaMode` to `json` on this response when you create or update the API
+          from Postman or an agent. `manual` is only for a save from the API Builder Manual tab.
     bodySchema:
       type: object
-      description: |-
-        JSON Schema describing the response body structure. Every object-typed
-        schema node must declare at least one property for the API Builder to
-        render it; omit this field when the response body has no defined shape.
+      description: Response body schema as an OpenAPI 3.0.3 Schema Object. Omit when the response has no defined shape.
       additionalProperties: true
       examples:
         - type: object
+          required: [id]
           properties:
             id:
               type: string
-            name:
+              description: Created resource id.
+              pattern: "^[A-Z0-9-]{8,}$"
+              minLength: 8
+            status:
               type: string
-            createdAt:
-              type: string
-              format: date-time
+              enum: [created]
+            qty:
+              type: integer
+              minimum: 0
+              exclusiveMinimum: true
+            lines:
+              type: array
+              items:
+                type: object
+                required: [sku]
+                properties:
+                  sku:
+                    type: string
+                    minLength: 1
       x-celigo-ai-guidance:
+        - |-
+          `required` means the property must be present. An empty string,
+          whitespace, 0, false, an empty array, and an empty object pass.
         - |-
           Every object-typed schema node — the root, a nested property, or an
           array's `items` — must carry a non-empty `properties` map. The API
@@ -221,10 +259,12 @@ ApiResponse:
             items:
               $ref: '#/ApiResponse/properties/mappings/items'
           hardCodedValue:
-            type: string
+            type: [string, 'null']
             description: |-
               Static value written to the target field instead of extracting
-              from input data.
+              from input data. JSON `null` writes the destination field as null;
+              it is what the mapper saves for its hard-coded
+              "Use null as default value" choice.
             x-celigo-ai-guidance:
               - |-
                 The field name is exactly `hardCodedValue` (capital C). The
@@ -295,6 +335,7 @@ ApiResponse:
       - Exactly one 'success' response (for successful operations)
       - Exactly one 'fail' response (for errors)
       - Zero or more 'custom' responses (for specific scenarios)
+      When sending `bodySchema`, set `schemaMode` to `json`. Postman and agent creates use `json`, not `manual`.
       The response router returns the first response whose `inputFilter` matches, and a
       response without one matches every request, so list the 'custom' responses ahead of
       'success'.

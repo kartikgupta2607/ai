@@ -50,7 +50,10 @@ User:
         accepted:
           type: boolean
           readOnly: true
-          description: When true, the user has accepted the invitation to join the account.
+          description: |-
+            When true, the user has accepted the invitation to join the account.
+            Absent while the invitation is pending — a pending record carries no
+            `accepted` key.
         disabled:
           type: boolean
           readOnly: true
@@ -100,7 +103,7 @@ User:
             - invited_during_signup
             - new_account_auto_join
           x-enumDescriptions:
-            existing_account_invite: User was invited to an existing account by an admin.
+            existing_account_invite: User was invited by an admin into an existing account — the inviting account; set whether or not the invitee already had a login.
             existing_account_share_request: User requested access to a shared account.
             invited_during_signup: User was invited as part of a new account signup flow.
             new_account_auto_join: User automatically joined a new account via domain matching.
@@ -231,7 +234,11 @@ User:
               x-celigo-refModel: users
               examples:
                 - 624774a6a7574d3ed9f9a5cc
-              description: The user's own account id.
+              description: |-
+                The user's own account id. The platform creates this login
+                record at invite time for an address that has none, so its
+                presence alone does not mean the person had a Celigo login
+                before the invitation.
             email:
               type: string
               format: email
@@ -248,7 +255,11 @@ User:
               format: date-time
               examples:
                 - '2026-05-02T17:02:59.370Z'
-              description: When the user last signed in (across any account).
+              description: |-
+                When the user last signed in (across any account) — a sign-in,
+                never an acceptance. On a pending invitation, a value later than
+                the record's `createdAt` means the invitee has a working login
+                and signed in after the invitation without accepting it.
             allowedToResetMFA:
               type: boolean
               description: When true, the current requester can reset MFA for this user.

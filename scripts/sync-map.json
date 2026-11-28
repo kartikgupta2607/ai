@@ -129,7 +129,9 @@
     "skills/writing-sql/references/schemas/rdbms-import.yml": "specs/v1/import/components/schemas/rdbms.yml"
   },
   "referenced": {
+    "skills/building-apis/references/common-schemas/lookups.yml": "specs/v1/common/schemas/lookups.yml",
     "skills/building-apis/references/common-schemas/mappings.yml": "specs/v1/common/schemas/mappings.yml",
+    "skills/building-apis/references/common-schemas/transform.yml": "specs/v1/common/schemas/transform.yml",
     "skills/building-apis/references/flow-schemas/response-mapping.yml": "specs/v1/flow/components/schemas/response-mapping.yml",
     "skills/building-apis/references/schemas/base.yml": "specs/v1/api/components/schemas/base.yml",
     "skills/building-b2b/references/common-schemas/filter.yml": "specs/v1/common/schemas/filter.yml",
@@ -209,7 +211,6 @@
     "skills/configuring-exports/references/schemas/base.yml": "specs/v1/export/components/schemas/base.yml",
     "skills/configuring-exports/references/schemas/cdc.yml": "specs/v1/export/components/schemas/cdc.yml",
     "skills/configuring-exports/references/schemas/record-extraction.yml": "specs/v1/export/components/schemas/record-extraction.yml",
-    "skills/configuring-exports/references/schemas/simple.yml": "specs/v1/export/components/schemas/simple.yml",
     "skills/configuring-exports/references/schemas/topic.yml": "specs/v1/export/components/schemas/topic.yml",
     "skills/configuring-guardrails/references/common-schemas/ai-description.yml": "specs/v1/common/schemas/ai-description.yml",
     "skills/configuring-guardrails/references/common-schemas/apim.yml": "specs/v1/common/schemas/apim.yml",

@@ -17,8 +17,25 @@ Test:
         Caps the total records a test run processes, counted on top-level records before
         oneToMany processing; the maximum exists to prevent accidentally processing large
         datasets during development. The cap applies across pages — processing stops once the
-        limit is reached regardless of pageSize. When transitioning to production, leave this in
-        place and change the export's type field; the limit then no longer applies.
+        limit is reached regardless of pageSize. On a lookup the cap applies to each record that
+        reaches the lookup. When transitioning to production, change the export's type field;
+        the limit then no longer applies.
+      x-celigo-ai-guidance:
+        - |-
+          On a lookup with `type: test` the limit is per arriving record: its results mapping
+          receives at most this many records for each record that reaches the lookup. That holds
+          in a flow run and in a test run of a flow, an API or a Tool — also when the test run
+          replays a saved `mockOutput` that holds more records than the limit.
+        - |-
+          A save keeps `test.limit` on a `type: test` export. A save that sends it with no
+          `type`, or with `type` `all` or `delta`, answers 200 and drops it.
+        - |-
+          A page-processor preview (`previewPageProcessor`) reads `test.limit` from the lookup
+          document in its request, with or without `type: test`: the lookup hands on up to that
+          many records of its live response, counted before its own output `filter`, and one
+          record when the document carries no limit. A lookup upstream of the previewed step
+          whose document carries `mockOutput` hands on that mock's first record whatever the
+          limit.
       minimum: 1
       maximum: 100
       examples: [10, 25, 50]

@@ -19,7 +19,8 @@ JDBC:
 
     **Delta exports (type: "delta")**
     For delta/incremental exports, do NOT populate a `delta` object inside `jdbc`.
-    Instead, use `{{lastExportDateTime}}` or `{{currentExportDateTime}}` directly in the query:
+    Instead, reference `{{lastExportDateTime}}` or `{{currentExportDateTime}}` in the query's
+    WHERE clause, written as a comparison the database accepts for a date column (see `query`):
     ```json
     {
       "type": "delta",
@@ -81,6 +82,12 @@ JDBC:
         SQL SELECT statement executed to retrieve data, from simple table selections to joins and
         aggregations. For delta exports, include {{lastExportDateTime}}/{{currentExportDateTime}}
         in the WHERE clause rather than configuring a separate delta object.
+
+        Double braces render each delta variable as a single-quoted string, so add no quotes of
+        your own; a database that converts that string to a date itself takes the bare comparison
+        (`updatedAt > {{lastExportDateTime}}`). NetSuite JDBC does not, so on a `netsuitejdbc`
+        connection format the variable with `dateFormat` and convert the result in the query:
+        `lastmodifieddate > TO_TIMESTAMP({{dateFormat "YYYY-MM-DD HH:mm:ss" lastExportDateTime}}, 'YYYY-MM-DD HH24:MI:SS')`.
       x-celigo-ai-guidance:
         - |-
           This field contains the SQL SELECT statement that will be executed to fetch data
@@ -94,14 +101,20 @@ JDBC:
           - Parameterized: `SELECT * FROM orders WHERE customer_id = {{record.customer_id}}`
         - |-
           ## FOR DELTA EXPORTS (when top-level type is "delta")
-          Include `{{lastExportDateTime}}` or `{{currentExportDateTime}}` in the WHERE clause:
+          Include `{{lastExportDateTime}}` or `{{currentExportDateTime}}` in the WHERE clause. On a
+          database that converts the quoted string to a date itself:
           - `SELECT * FROM customers WHERE updatedAt > {{lastExportDateTime}}`
           - `SELECT * FROM orders WHERE modified_date >= {{lastExportDateTime}}`
+        - |-
+          On a NetSuite JDBC connection (`jdbc.type` is `netsuitejdbc`) never compare a date column
+          to the bare variable: the driver fails the query with
+          "Error getting the literal value of right operand" (10169). Convert it, formatted first:
+          `SELECT id, tranid, lastmodifieddate FROM transaction WHERE lastmodifieddate > TO_TIMESTAMP({{dateFormat "YYYY-MM-DD HH:mm:ss" lastExportDateTime}}, 'YYYY-MM-DD HH24:MI:SS')`.
         - |-
           This field contains the SQL SELECT statement that will be executed to fetch data
           from the database.
           The query can range from simple table selections to complex joins and aggregations.
-      examples: ["SELECT * FROM customers WHERE updatedAt > {{lastExportDateTime}}", "SELECT * FROM orders WHERE exported = false", "SELECT * FROM customers WHERE region = 'Northeast'", "SELECT o.id, c.name, o.total FROM orders o JOIN customers c ON o.customer_id = c.id WHERE o.status = 'SHIPPED'", "SELECT product_category, SUM(quantity) as total_sold FROM order_items GROUP BY product_category", "SELECT * FROM customer_orders WHERE customer_id = {{record.id}}"]
+      examples: ["SELECT * FROM customers WHERE updatedAt > {{lastExportDateTime}}", "SELECT id, tranid, lastmodifieddate FROM transaction WHERE lastmodifieddate > TO_TIMESTAMP({{dateFormat \"YYYY-MM-DD HH:mm:ss\" lastExportDateTime}}, 'YYYY-MM-DD HH24:MI:SS')", "SELECT * FROM orders WHERE exported = false", "SELECT * FROM customers WHERE region = 'Northeast'", "SELECT o.id, c.name, o.total FROM orders o JOIN customers c ON o.customer_id = c.id WHERE o.status = 'SHIPPED'", "SELECT product_category, SUM(quantity) as total_sold FROM order_items GROUP BY product_category", "SELECT * FROM customer_orders WHERE customer_id = {{record.id}}"]
     once:
       type: object
       description: |

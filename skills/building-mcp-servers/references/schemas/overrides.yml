@@ -32,8 +32,10 @@ Overrides:
       but an entry with `_id` and no `_connectionId` pins the step to its authored
       connection, so a pair that remaps that connection skips it.
     - |-
-      `connections[]` ids aren't validated on save, and the server caches its configuration,
-      so a saved change can take tens of seconds to reach `tools/call`.
+      A `connections[]` pair's `_id` isn't validated on save: a pair whose `_id` names no
+      connection is stored, and `tools/call` then fails with
+      "The connection <id> not found". A saved pair applies to the next `tools/call`, so a
+      call right after the save shows whether the binding works.
   properties:
     connections:
       type: array
@@ -346,7 +348,8 @@ Overrides:
                   type: object
                   description: |-
                     Branch filter override. Not applied on an MCP server; stored, but calls
-                    ignore it.
+                    ignore it. The export-filter wrapper `{type: "expression", expression: {...}}`
+                    fails the save with 422 `invalid_router_branch_input_filter`.
                   properties:
                     version:
                       type: string

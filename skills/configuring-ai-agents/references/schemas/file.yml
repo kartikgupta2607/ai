@@ -72,6 +72,14 @@ File:
   properties:
     fileName:
       type: string
+      x-celigo-ui-override: >-
+        Required by the import form (the shared file.fileName field is required: true), which
+        seeds a new import with file-{{timestamp "x"}}.<ext> the first time the field appears with
+        no value — the extension follows the file type (csv, json, xlsx, xml; edi for a file
+        definition). The API neither requires nor defaults it: a save without fileName is accepted
+        and stores none, and the run then names the file with a hyphenated UTC stamp and no
+        extension (2026-11-07T02-26-06 on a Celigo Storage import). Encoded to mirror the form so
+        builders produce complete configurations.
       description: |-
         **REQUIRED for file-based imports.**
 
@@ -81,16 +89,17 @@ File:
         (`{{record.fileMeta.fileName}}` from an FTP source, `fileMeta.name` from Google Drive).
 
         **Default behavior**
-        - When the user does not specify a file naming convention, **always default to timestamped filenames** using `{{timestamp}}` (e.g., `"items-{{timestamp}}.csv"`). This ensures each run produces a unique file and avoids overwriting previous exports.
+        - When the user does not specify a file naming convention, **always default to timestamped filenames** using `{{timestamp "x"}}` — epoch milliseconds, the import form's own default for a new import (e.g., `"items-{{timestamp "x"}}.csv"`). This ensures each run produces a unique file and avoids overwriting previous exports. The bare `{{timestamp}}` renders an ISO stamp whose colons Celigo Storage refuses.
         - Only use a fixed filename (without timestamp) if the user explicitly requests overwriting or a fixed name.
+        - The save does not validate the name; a character the destination refuses fails the record when the file is written — on Celigo Storage with `STORAGE_INVALID_NAME` "File name contains invalid characters".
 
         **Common patterns**
-        - `"data-{{timestamp}}.json"` - Timestamped JSON file (DEFAULT — use this pattern when not specified)
+        - `"data-{{timestamp "x"}}.json"` - Timestamped JSON file (DEFAULT — use this pattern when not specified)
         - `"export-{{timestamp 'YYYY-MM-DD'}}.csv"` - Date-stamped CSV file
         - `"{{recordType}}-backup.xml"` - Dynamic record type naming
 
         **Examples**
-        - `"customers-{{timestamp}}.json"`
+        - `"customers-{{timestamp "x"}}.json"`
         - `"orders-export.csv"`
         - `"inventory-{{timestamp 'YYYY-MM-DD'}}.xlsx"`
 
@@ -110,7 +119,23 @@ File:
           record on a `blob: true` import, the page's record array otherwise — so `record.`
           previews empty there; judge by a run. The metadata field names are the exporting
           provider's — read them off the incoming sample record.
-      examples: ["customers-{{timestamp}}.json", "orders-export.csv"]
+        - |-
+          The save does not validate the rendered name — a literal `a:b.json` and a bare
+          `{{timestamp}}` both save 201 — so an unsupported character surfaces only when the file
+          is written. On Celigo Storage the record fails with `STORAGE_INVALID_NAME` "File name
+          contains invalid characters" (source `connector`), which a colon triggers; the bare
+          `{{timestamp}}` renders an ISO stamp with colons, while `{{timestamp "x"}}` (the import
+          form's default, epoch milliseconds) writes. A file-generation import saved with no
+          `fileName` still writes, naming the file with a hyphenated UTC stamp and no extension
+          (`2026-11-07T02-26-06`), so always set one. Live-verified 2026-11-06 with flow runs on
+          a Celigo Storage import.
+        - |-
+          On Celigo Storage a file written under a name the destination folder already holds
+          replaces that file's content in place: the folder still lists one item, with the same
+          storage item id, the run reports no error, and the storage activity log records the
+          upload with `overwrite: true`. Live-verified 2026-11-12 with two flow runs of one
+          import that wrote different content under a fixed `fileName`.
+      examples: ["customers-{{timestamp \"x\"}}.json", "orders-export.csv"]
     skipAggregation:
       type: boolean
       description: |-
@@ -157,6 +182,11 @@ File:
           - Use `"csv"` for flat tabular data, spreadsheet-like records
           - Use `"xml"` for XML-based integrations, SOAP services
           - Use `"xlsx"` for Excel-compatible outputs
+        - |-
+          What writes the file's content differs by type: `csv` and `xlsx` are mapping-driven
+          (the mapped record's fields become the columns); `json` is mapping-driven too unless
+          `json.body` is set; `xml` always needs the `xml.body` template; `filedefinition` takes
+          the file definition's rules. Pick the type first, then author only that type's block.
     encoding:
       type: string
       enum:
@@ -243,16 +273,48 @@ File:
           The `key` + `batchSize` combination has not been probed (it needs a B2B Manager
           account) — treat it as unverified, neither allowed nor forbidden.
     encrypt:
-      type: boolean
+      type: string
+      enum: [pgp]
+      x-enumDescriptions:
+        pgp: Encrypt the file with PGP before it is written.
       description: |-
-        Whether to encrypt the output file.
-
-        **Values**
-        - `true`: Encrypt the file (requires PGP configuration)
-        - `false`: No encryption
-
-        **Default:** `false`
-      default: false
+        Encrypts the file before it reaches the destination — a file generated from records
+        or, on a `blob: true` transfer, the existing file being moved; omit it for an
+        unencrypted file. `pgp` requires `pgp.symmetricKeyAlgorithm` and a connection holding
+        the recipient's public key (`pgp.publicKey`). Not observed in a run here; per the file
+        adaptor's code (the `blob: true` transfer path): with no `compressionFormat`,
+        a file over 200 MB fails the record before encryption with `pgp_file_size_exceeded`
+        ("The file size exceeds the maximum limit of 200 MB supported for PGP encryption." —
+        the adaptor's `errorStore.js` text); with `compressionFormat` set the adaptor skips that
+        pre-check (the compressed size is not known up front) and the encryption service
+        enforces its own 200 MB limit on the compressed file (`S3_FILE_SIZE_EXCEEDED`); a key
+        the platform cannot use fails with the PGP service's own code (`PGP_PUBLICKEY_INVALID` /
+        `PGP_PRIVATEKEY_INVALID` — "<operation> failed because the <key> is invalid."), and
+        `encryption_error` ("error in encrypting the file") only when the service returns no
+        code; the file is never written in clear and a transfer's encryption failure is not
+        retried automatically. A file generated from records meets the same encryption-service
+        limit with `S3_FILE_SIZE_EXCEEDED`.
+      x-celigo-ui-override: >-
+        The transfer forms for FTP, S3, the on-premise file system and the cloud file providers
+        (Box, Dropbox, Google Drive, Azure Blob Storage, Google Cloud Storage, Azure Data Lake
+        Storage Gen2, Celigo file storage) offer the Encrypt files control in both modes
+        (imports/subForms/fileAdvanced.js: 'pgpencrypt' visible for inputMode records and blob,
+        disabled until the connection holds a PGP key). The connection-side PGP section
+        (connections/subForms/fileAdvanced.js) is mounted by ftp.js, s3.js, filesystem.js,
+        celigoapis.ts, tp.js and the Box / Dropbox / Google Drive / Azure storage account
+        custom HTTP forms; the Google Cloud Storage (httpFramework.js) and ADLS Gen2 (http.js)
+        connection forms do not mount it, so on those two the key is set through the API. The
+        AS2, VAN and NetSuite file cabinet import forms do not carry the control.
+      x-celigo-ai-guidance:
+        - |-
+          Without `pgp.symmetricKeyAlgorithm` the save fails with 422 `missing_required_field` on
+          `file.pgp.symmetricKeyAlgorithm`; on a connection without `pgp.publicKey` it fails with
+          422 `missing_required_field` on `file.encrypt` ("pgp publicKey is required when encrypt
+          is selected to perform file encryption."), and that check runs first, for any value.
+        - |-
+          `true` and `false` are rejected with 422 `enum` — the field is the string `pgp`, never a
+          boolean. Blob transfers follow the same save rules and return `encrypt` and `pgp` on
+          reads even without `file.type`.
     csv:
       type: object
       description: |-
@@ -293,6 +355,44 @@ File:
       description: |-
         JSON-specific configuration. Only used when `type` is `"json"`.
       properties:
+        body:
+          type: string
+          x-celigo-agent:
+            - handlebars
+          description: |-
+            Handlebars template for the generated JSON document — the *Build JSON document*
+            editor. Rendered once per file against the records of the page, after the mapping:
+            text before the `{{#each batch_of_records}}` loop is the file's header, the loop
+            body is written once per record, text after it is the footer; under
+            `aggregation.type: all` the loop's output for every page of the run is written
+            between one header and one footer. Omit it to write the mapped records as a JSON
+            array per file.
+          x-celigo-ai-guidance:
+            - |-
+              Leave this out unless the user needs a custom document shape: with no body the
+              platform writes each file as a JSON array of the mapped records. A saved body
+              overrides that — a leftover `{}` body writes literal `{}` files.
+            - |-
+              When a body is needed, wrap the per-record part in `{{#each batch_of_records}} …
+              {{/each}}` and address the record inside it as `record.<field>` (a grouped record
+              as `{{#each rows}} … {{/each}}`); `{{{jsonSerialize record}}}` with
+              `{{#unless @last}},{{/unless}}` between elements is the common form. The JSON
+              generator recognises only that loop: a `{{#each data}}` loop is written whole per
+              page and the pages are joined with commas (`[…],[…]`, invalid JSON under one file
+              per run). At the root there is no `record`: `{{record.<field>}}` or a bare
+              `{{<field>}}` outside the loop renders empty, while `batch_of_records` is in
+              scope (`batch_of_records.0.record.<field>` is the first record when a header needs
+              it). A body with no loop is rendered whole once per page — `{"id": {{record.id}} }`
+              becomes `{"id":  }` per page — and under `aggregation.type: all` the pages are
+              joined with commas (`{"id":  },{"id":  }`), which is invalid JSON even when each
+              page's own text was valid.
+            - |-
+              The template renders against the page whatever `http.batchSize` says, and `http.body`
+              plays no part in the file's content. The field's editor Preview renders the template
+              against one sample page and uploads nothing, and warns — without blocking the save —
+              when the template has no `{{#each batch_of_records}}` loop and when the evaluated
+              text is not valid JSON; it does not run the page-combining generator, so how pages
+              join under `aggregation.type: all` shows only in a flow run.
         resourcePath:
           type: string
           description: JSONPath expression to locate records within the JSON structure.
@@ -301,6 +401,44 @@ File:
       description: |-
         XML-specific configuration. Only used when `type` is `"xml"`.
       properties:
+        body:
+          type: string
+          x-celigo-agent:
+            - handlebars
+          description: |-
+            Handlebars template for the generated XML document — the *Build XML document*
+            editor. Rendered once per file against the records of the page, after the mapping:
+            text before the record loop is the file's header, the loop body is written once per
+            record, text after it is the footer; under `aggregation.type: all` the loop's
+            output for every page of the run is written between one header and one footer.
+            Must be set when `type` is `"xml"` — there is no mapping-driven XML.
+          x-celigo-ai-guidance:
+            - |-
+              Author it as header + record loop + footer: the XML declaration and root element
+              around `{{#each batch_of_records}} … {{/each}}`, with the record addressed inside
+              the loop as `record.<field>` (a grouped record as `{{#each rows}} … {{/each}}`,
+              nested elements as `{{#each record.<list>}} … {{/each}}`). The XML generator also
+              accepts the legacy `{{#each data}} … {{/each}}`, which binds the record itself as
+              `this` (`{{<field>}}`). At the root there is no `record`: `{{record.<field>}}` or
+              a bare `{{<field>}}` outside the loop renders empty, while `batch_of_records` is in
+              scope (`batch_of_records.0.record.<field>` is the first record when a header needs
+              it). A body with no loop is rendered whole once per page — `<root>{{record.id}}</root>`
+              becomes `<root></root>` per page — and under `aggregation.type: all` the pages are
+              concatenated into one multi-root file (`<root></root><root></root>`); for a
+              one-file-per-run XML template without an each block the editor's Preview shows an
+              error in place of its output, but the form still saves the template and the run
+              writes that file — an API save never sees the check.
+            - |-
+              The template renders against the page whatever `http.batchSize` says, and on an
+              HTTP file-provider import `http.body` plays no part in the file's content. The
+              field's editor Preview renders the template against one sample page and uploads
+              nothing, and warns — without blocking the save — when a one-file-per-page template
+              has no record loop (the one-file-per-run case is the error above) and when the
+              evaluated text is not valid XML; it does not run the page-combining generator, so
+              how pages join under `aggregation.type: all` shows only in a flow run.
+            - |-
+              Saving `type: xml` without this field fails with 422 `missing_required_field`
+              ("required field, file.xml.body is missing.").
         resourcePath:
           type: string
           description: XPath expression to locate records within the XML structure.
@@ -358,11 +496,13 @@ File:
           x-enumDescriptions:
             all: One file per flow run — every record from the run (per export, or per request on real-time flows) in a single file
             page: One file per page of records
-            key: One file per aggregation key — EDI file definitions only; records sharing the key derived from the file definition's document type are combined into one document
+            key: One file per key (the option's label in the transfer form) — EDI file definitions only; records sharing the aggregation key derived from the file definition's document type are combined into one document
           description: |-
             Which batches of a run's records become separate output files. EDI file definitions
             (`file.type: filedefinition`) are written per page or per key, never per run; `key`
-            is accepted only for them and only when the account has B2B Manager. The grouping
+            is accepted only for them and only when the account has B2B Manager, and not for a
+            `delimited/tradacoms` definition (422 `not_supported` "Aggregation type key is only
+            supported for B2B Manager"). The grouping
             key and the line-item loop it merges come from the EDI file definition's document
             type, so there is no separate key field to configure.
           examples: ["all", "page", "key"]
@@ -401,8 +541,8 @@ File:
               type: string
           default:
             type: [string, 'null']
-            description: Value substituted when a source value is not found in map; empty string
-              when omitted. May be stored as null (no default).
+            description: Value substituted when a source value is not found in map and the miss is
+              allowed.
           allowFailures:
             type: boolean
             description: When true, a value missing from map does not fail the record and the default (or original value) is used.
@@ -410,8 +550,8 @@ File:
     pgp:
       type: object
       description: |-
-        PGP encryption settings applied when encrypt is true; selects the symmetric cipher and the
-        signing hash. The connection must hold the recipient's public key.
+        PGP encryption settings applied when `encrypt` is `pgp`; selects the symmetric cipher and
+        the signing hash. The connection must hold the recipient's public key.
       properties:
         symmetricKeyAlgorithm:
           type: string
@@ -422,9 +562,10 @@ File:
             3des: Triple DES block cipher (legacy).
             aes128: AES with a 128-bit key.
             aes192: AES with a 192-bit key.
-            aes256: AES with a 256-bit key (default, recommended).
-          default: aes256
-          description: Symmetric cipher used to encrypt the file body; aes256 unless the recipient requires another.
+            aes256: AES with a 256-bit key (recommended).
+          description: |-
+            Symmetric cipher used to encrypt the file body; required when `encrypt` is `pgp` (no
+            server default). Use aes256 unless the recipient requires another.
           examples: ["aes256", "3des"]
         hashAlgorithm:
           type: string
@@ -434,8 +575,14 @@ File:
             sha384: SHA-384 signing hash.
             sha512: SHA-512 signing hash.
             sha224: SHA-224 signing hash.
-          description: Hash algorithm used when signing the encrypted file; set only when the recipient requires a specific one.
+          description: Hash algorithm used when signing the encrypted file; set only when the recipient requires a signature, which also needs the connection's `pgp.privateKey` and `pgp.passphrase`.
           examples: ["sha256", "sha512"]
+          x-celigo-ai-guidance:
+            - |-
+              On a connection without `pgp.privateKey` the save fails with 422
+              `missing_required_field` on `file.pgp.hashAlgorithm` ("pgp privateKey is required
+              when hashAlgorithm is selected to perform file signature."); leave it unset unless
+              the connection holds the private key.
     skipRename:
       type: boolean
       description: |-
@@ -487,6 +634,14 @@ File:
           provider — set it only from a folder ID the user supplied or the UI folder browser
           stored; never fabricate one. To address a folder by path instead, set pathMode to
           relativePath and put the path in the adaptor's flat path field.
+        - >-
+          On a Celigo Storage destination (a Celigo APIs connection with `http.type: file`) the
+          folder is resolved when the file is written, not at save: `pathMode: directoryId` with
+          an `id` no folder carries saves 201 and the run's records then fail with
+          `storage_parent_folder_not_found` "Parent folder not found in Celigo Storage. Verify the
+          folder ID exists and the connection has access." (source `resource`), whereas
+          `pathMode: relativePath` creates a path in `http.relativeURI` that does not exist yet and
+          writes into it. Live-verified 2026-11-06 with flow runs.
       properties:
         pathMode:
           type: string
@@ -501,7 +656,9 @@ File:
           description: |-
             Provider-native folder ID of the destination directory (e.g. a Google Drive folder ID);
             set when pathMode is directoryId. This is the file provider's own ID, not a Celigo resource ID.
-          examples: ["1KppvTTr4jKhJqwPAhGWN6SRwk5m45DL2"]
+            For Celigo Storage it is the folder's storage item id, and an id no folder carries fails
+            the run with `storage_parent_folder_not_found`.
+          examples: ["1KppvTTr4jKhJqwPAhGWN6SRwk5m45DL2", "6aee8b26ddc1d57f005d3d66"]
         name:
           type: string
           description: |-
@@ -552,3 +709,15 @@ File:
           description: Provider-native ID of the storage root the backup relative path resolves against; set when pathMode is relativePath.
           examples: ["1qU1hvFarBFMb4-twqKm1rR5o_6j9vs9g"]
 
+  # Live-verified 2026-10-28: the save rejects `type: xml` without `xml.body`
+  # (422 missing_required_field); `json.body` has no such rule.
+  if:
+    properties:
+      type:
+        const: xml
+    required: [type]
+  then:
+    required: [xml]
+    properties:
+      xml:
+        required: [body]

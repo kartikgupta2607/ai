@@ -36,7 +36,10 @@ FlowBase:
         to the account's "Standalone flows" integration (or the create fails
         with `422 standalone_flows_not_supported` when that integration is
         missing). A value that is not a well-formed ObjectId is rejected with
-        `400 invalid_ref` rather than auto-assigned. Always set it explicitly.
+        `400 invalid_ref` rather than auto-assigned. Always set it explicitly. An
+        integration with `syncs: true` takes no flows: creating a flow in one, or moving a
+        flow into one, fails with 422 `integration_not_for_flow` "An integration is suppose
+        to have either flows or syncs but not both."
       examples: ["60a2c4e6f321d800129a1a3c"]
       x-celigo-ai-guidance:
         - To move the flow to a different integration, PUT with a changed _integrationId AND remove _flowGroupingId (flow groups are per-integration; a stale value is rejected with 422 flowgrouping_not_belong). The platform registers the flow's step connections in the target integration on save.
@@ -54,7 +57,10 @@ FlowBase:
         with a broken schedule: `422 invalid_value` when the expression cannot be parsed
         into a schedule (for example all wildcards, `? * * ? * *`), `422
         schedule_not_supported` when its runs would be less than a minute apart — which
-        is also what free text such as `every 5 minutes` produces.
+        is also what free text such as `every 5 minutes` produces. A five-field
+        expression that passes those checks — a Unix cron such as `0 6 * * *`; the
+        all-wildcard `* * * * *` fails with `422 invalid_value` — is stored as sent and
+        does not run as written (a known issue, described in the guidance).
 
         Celigo spreads scheduled starts across the platform so that every flow starts
         promptly: you choose the cadence — every N minutes, hourly, daily, twice daily,
@@ -133,6 +139,21 @@ FlowBase:
           progress (boundaries skipped during a long run are by design); missed
           runs on an enabled, unchanged flow with nothing running are a
           platform-scheduler issue to escalate, not a configuration problem.
+        - |-
+          Known issue, until the fix is released: a five-field expression
+          that passes the save's checks — a Unix cron such as `0 6 * * *`; `* * * * *`
+          is rejected, 422 `invalid_value` — is stored as sent, and the scheduler reads
+          it from the seconds position: its first field as seconds, the other four as
+          minute, hour, day-of-month and month, on any day of the week (live-verified
+          2026-11-22, on the flow's `schedule` and on a page generator's). So
+          `0 * * * *` runs every minute, `0 */4 * * *` every four minutes and
+          `0 6 * * *` every hour at minute 6, and a fifth field written as weekdays is
+          read as months: `0 9 * * 1-5` runs at minute 9 of every hour in January
+          through May and not at all in the other months. When a flow's runs come far
+          more often than its schedule seems to say, or do not come at all, count the
+          fields of the saved `schedule`; for one with five, say what it runs as and
+          offer the six-field schedule for the cadence the user meant (`? 5 6 ? * *`
+          for daily at 06:05). Never author a five-field schedule.
       examples:
         - "? 5 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23 ? * *"
         - "? 5 0,4,8,12,16,20 ? * *"
@@ -141,9 +162,14 @@ FlowBase:
     timezone:
       type: [string, 'null']
       description: |-
-        IANA timezone for the schedule (e.g. `America/New_York`). Defaults to UTC. The flow's
-        `schedule` and each page generator's own `schedule` are read in this timezone; a page
-        generator has no timezone of its own.
+        IANA timezone for the schedule (e.g. `America/New_York`). The flow's `schedule` and each
+        page generator's own `schedule` are read in this timezone; a page generator has no
+        timezone of its own. A flow saved without one stores none, and its schedule then runs in
+        UTC when the account owner's profile has no time zone; per the Help Center's time zone
+        precedence, it runs in the owner's profile time zone when the profile sets one.
+        The value must be a name the IANA time zone database recognizes: a create, PUT, or PATCH
+        that sets anything else fails with 422 `invalid_value` ("<value> is not a recognized IANA
+        time zone name for timezone."). An empty string stores none and `null` is not checked.
       examples: ["America/New_York", "Europe/London", "Asia/Tokyo", "UTC"]
     disabled:
       type: boolean
@@ -192,19 +218,36 @@ FlowBase:
       format: objectId
       x-celigo-refModel: exports
       description: |-
-        Source export of a simple (single source, single destination) flow — the legacy
-        pre-flow-builder model still produced by Data Loader flows. Paired with `_importId`
-        instead of `pageGenerators`/`pageProcessors`; the server accepts and serves both
-        forms. Prefer `pageGenerators` for new flows.
+        Source export of a two-step flow — one source and one destination, referenced
+        directly instead of through `pageGenerators`/`pageProcessors`; the server accepts and
+        serves both forms. It is the only form a Data loader flow takes: a flow whose source
+        is a Data loader export (`type: simple`) carries `_exportId` and `_importId` and no
+        step arrays. Prefer `pageGenerators` for every other source.
       examples: ["60a2c4e6f321d800129a1a3c"]
+      x-celigo-ai-guidance:
+        - |-
+          Build a Data loader flow as `_exportId` (the `type: simple` export) plus `_importId`.
+          The same export in `pageGenerators` fails with 422 `invalid_flow` ("… of type simple
+          cannot be used as a pageGenerator"), and `pageProcessors` or `routers` beside
+          `_exportId` fails with 422 `invalid_flow` ("pageProcessors can't be used with
+          _exportId"), so the flow has one destination, `_importId`, and no lookup step or
+          router. A flow that carries `_exportId` alone is saved too, and a later PUT adds,
+          replaces or drops `_importId`.
+        - |-
+          An abstract flow (`isAbstract: true`) takes neither field: a create that carries
+          `_exportId` and `_importId` fails with 422 `abstract_flow_invalid_fields`.
+        - |-
+          A PUT that carries `_exportId` and `_importId` and omits the step arrays turns a
+          flow saved with no steps, or with one import in `pageProcessors` and no source, into
+          the two-step form.
     _importId:
       type: string
       format: objectId
       x-celigo-refModel: imports
       description: |-
-        Destination import of a simple (single source, single destination) flow — the legacy
-        pre-flow-builder model still produced by Data Loader flows. Paired with `_exportId`
-        instead of `pageGenerators`/`pageProcessors`. Prefer `pageProcessors` for new flows.
+        Destination import of a two-step flow — one source and one destination, referenced
+        directly. Paired with `_exportId` instead of `pageGenerators`/`pageProcessors`, and the
+        one destination of a Data loader flow. Prefer `pageProcessors` for every other flow.
       examples: ["60a2c4e6f321d800129a1a3c"]
     _runNextFlowIds:
       type: [array, 'null']
@@ -285,7 +328,8 @@ FlowBase:
 
         Constraints: top-level `pageProcessors` are not allowed (use `routers` — a linear chain
         sits in one pass-through router with neither routing field set), cannot reference another
-        abstract flow, cannot be a "run next" target, and cannot be unset while instances exist.
+        abstract flow, cannot be a "run next" target, and cannot be unset or deleted while
+        instances exist — delete the instances first.
       examples: [true, false]
     _abstractFlowId:
       type: string
@@ -300,6 +344,8 @@ FlowBase:
           customize it only through `overrides`.
           Do not set `pageGenerators`, `pageProcessors`, `routers`,
           or `runPageGeneratorsInParallel` on the instance — they are inherited from the abstract flow.
+          A create or PUT that carries `pageGenerators` or `routers` fails with 422
+          `flow_instance_invalid_fields`.
       examples: ["60a2c4e6f321d800129a1a3c"]
     overrides:
       $ref: "./overrides.yml#/Overrides"
@@ -379,6 +425,11 @@ FlowBase:
           PUT with `draft: false` clears the flag and the expiry, promoting the draft to a
           permanent flow. PUT with `draft: true` on a non-draft flow is silently ignored,
           and a PUT that omits the field leaves an existing draft flag unchanged.
+        - |-
+          Clearing the flag approves the draft, and the approval belongs to the person
+          the draft was created for: in integrator.io they give it by accepting the
+          draft. An agent acting for that person never sends `draft: false` for them,
+          and never gives them this request as the way to keep a draft.
     sandbox:
       type: boolean
       deprecated: true

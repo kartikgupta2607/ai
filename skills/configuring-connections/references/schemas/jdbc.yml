@@ -4,15 +4,29 @@ JDBC:
     Configuration for JDBC (Java Database Connectivity) connections. Used when the connection
     type is "jdbc". Provides access through Java JDBC drivers to databases not covered by the
     rdbms type — such as NetSuite SuiteAnalytics, Databricks, DB2, and Workday. The driver runs
-    on a Celigo on-premise Agent, so most jdbc connections need a connection-level _agentId.
+    on a Celigo on-premise Agent, so most jdbc connections need an on-premise binding — a
+    connection-level _agentId, or an agent group through _agentGroupId.
   x-celigo-ai-guidance:
     - The POST is rejected with 422 if type-specific required fields are missing (see the per-type conditional rules).
     - |-
-      The agent and activedirectory types require a real connection-level _agentId: the POST fails with
-      422 "The JDBC connection requires Agent. Expected field: _agentId to be present in the connection
-      doc." A placeholder cannot be created without one, so the user should install a Celigo Agent first.
+      The agent and activedirectory types require a real on-premise binding — a connection-level
+      _agentId, or an agent group through _agentGroupId (one of the two, never both; the agent-mode
+      check accepts either — live-verified for both agent and activedirectory: a POST carrying only
+      _agentGroupId is not answered with agent_mode_only): with neither, the POST fails with 422 "The JDBC
+      connection requires Agent. Expected field: _agentId to be present in the connection doc." A
+      placeholder cannot be created without one, so the user should install a Celigo Agent first.
       Other types commonly run on an agent too, but only these two are validator-enforced (live-verified
       celigo-labs-2 2026-06-11).
+    - |-
+      For a NetSuite Analytics Warehouse (NSAW) connection write type oracle:thin with authType wallet,
+      never customjdbc in its place. A wallet connection cannot be created with a placeholder wallet:
+      a POST with no wallet fails with 422 missing_required_field "Expected field: wallet to be
+      present.", one whose wallet is a .zip without the wallet's files fails with 422
+      missing_required_file naming the files missing, and one whose wallet is not a base64 .zip is
+      refused too. A PUT that moves a customjdbc connection to authType wallet with no wallet fails with
+      the same 422 missing_required_field and leaves the connection unchanged. The credentials .zip is
+      uploaded on the connection form, so tell the user to create the connection there. An oracle:thin
+      connection with authType customjdbc, a host and a user and password saves without an agent.
   x-celigo-ui-override: >-
     Two activedirectory requireds mirror the connection form rather than the API: password and port
     (default 389). The API creates an activedirectory connection without them (it auto-defaults port
@@ -40,9 +54,9 @@ JDBC:
         agent: Generic JDBC driver deployed on a Celigo Agent (requires driverPath).
         netsuitejdbc: NetSuite SuiteAnalytics JDBC driver for reporting and analytics queries.
         databricks: Databricks SQL/Spark via JDBC.
-        "oracle:thin": Oracle Database via the Oracle Thin JDBC driver.
+        "oracle:thin": Oracle Database via the Oracle Thin JDBC driver — NetSuite Analytics Warehouse (NSAW) when `authType` is `wallet`, Oracle Autonomous Database when it is `customjdbc`; a sync reads a connection of this type as a NetSuite Analytics Warehouse destination.
         sqlserver: Microsoft SQL Server via the JTDS or Microsoft JDBC driver.
-        activedirectory: SQL Server with Active Directory authentication.
+        activedirectory: Microsoft Active Directory over LDAP (default port 389) through an on-premise agent, read with SQL against the directory tables the driver exposes; LDAPVersion and BaseDN go in properties.
         db2: IBM DB2 database via JDBC.
         workday: Workday via JDBC for report and data access.
       description: |-
@@ -92,7 +106,9 @@ JDBC:
       type: string
       description: |
         Oracle service name. Used instead of the database field for Oracle JDBC connections.
-        This is the TNS service name or pluggable database (PDB) service name.
+        This is the TNS service name or pluggable database (PDB) service name. With wallet sign-in
+        the connection form's **Service name** offers the services of the uploaded wallet to choose
+        from.
       examples: ["oax5434857487_high"]
     authType:
       type: string
@@ -100,18 +116,19 @@ JDBC:
         - customjdbc
         - wallet
       x-enumDescriptions:
-        customjdbc: Standard username and password authentication.
-        wallet: Oracle Wallet authentication using an encrypted wallet file.
+        customjdbc: Username and password sign-in to the database at `host` — what the connection form's Oracle Autonomous Database application saves.
+        wallet: Oracle wallet sign-in, with the wallet in `wallet`, one of its services in `serviceName`, and the database user and password — what the connection form's NetSuite Analytics Warehouse (NSAW) application saves.
       description: |-
-        Authentication method for the JDBC connection. Defaults to customjdbc (username/password).
-        Use wallet for Oracle Wallet authentication with the wallet field.
+        How an `oracle:thin` connection signs in. The connection form sets it from the application
+        chosen and shows no field for it.
       examples: ["customjdbc"]
     wallet:
       type: string
       description: |
-        Oracle Wallet file contents (encrypted at rest).
-        Required when authType is "wallet". Contains the auto-login wallet (cwallet.sso)
-        with encrypted credentials for passwordless Oracle authentication.
+        The Oracle wallet for wallet sign-in: the credentials .zip downloaded from the database,
+        base64-encoded (the connection form's **Credentials .zip file** upload; encrypted at rest).
+        The save checks it: the .zip must hold `cwallet.sso`, `sqlnet.ora`, `tnsnames.ora` and
+        `ojdbc.properties`.
       writeOnly: true
     driverPath:
       type: string
@@ -133,16 +150,23 @@ JDBC:
             type: string
             description: JDBC connection property value.
             examples: ["4241589"]
-      description: |
-        Additional JDBC connection properties as name/value pairs.
-        These are passed directly to the JDBC driver as connection properties.
-        Use for driver-specific settings like SSL mode, connection timeout,
-        application name, etc.
+      description: |-
+        Additional JDBC connection properties as name/value pairs, passed straight to the
+        JDBC driver — driver-specific settings such as SSL mode, connection timeout or
+        application name. On a Databricks connection, `ConnCatalog` and `ConnSchema` set the
+        catalog and schema every unqualified table name resolves in — including a Batch
+        Insert import's destination table, which cannot be qualified on Databricks — so an
+        import that targets another catalog or schema needs these properties set, or a
+        second connection that sets them.
       examples:
         - - name: AccountID
             value: "4241589"
           - name: ServerDataSource
             value: NetSuite2.com
+        - - name: ConnCatalog
+            value: analytics
+          - name: ConnSchema
+            value: sales
     concurrencyLevel:
       type: integer
       description: |
@@ -163,6 +187,15 @@ JDBC:
       minimum: 1
       maximum: 50
       default: 5
+    useSSL:
+      type: boolean
+      writeOnly: true
+      description: |-
+        When true, the connection uses SSL/TLS (the form's **Use SSL** checkbox); stored and
+        returned as the connection-level `ssl.enabled`, never under `jdbc`. Takes precedence over
+        `ssl.enabled` in the same body. `false` is stored only together with `ssl.cert`;
+        otherwise it clears the stored flag.
+      examples: [true]
   # API requireds are enforced via 422 on connection POST.
   # The named entries that some types need inside `properties` are required by the validator but
   # documented in prose, not encoded, since only the presence of `properties` was verified:
@@ -176,11 +209,12 @@ JDBC:
   # Form-stricter-than-API additions (x-celigo-ui-override): the form requires `password` and `port`
   # for activedirectory — the API creates an activedirectory connection without them and
   # auto-defaults the port, but the form requires them, so they're encoded to mirror the form.
-  # `agent` and `activedirectory` additionally require a connection-level `_agentId` (POST 422 "The JDBC
-  # connection requires Agent. Expected field: _agentId to be present") — the
-  # activedirectory `host`+`user`+`properties` requireds are likewise API-enforced. `_agentId` is
-  # cross-level, so encoded in request.yml's jdbc branch (when jdbc.type is agent/activedirectory)
-  # rather than this per-config schema.
+  # `agent` and `activedirectory` additionally require an on-premise binding — a connection-level
+  # `_agentId` or an agent group's `_agentGroupId` (POST 422 "The JDBC connection requires Agent.
+  # Expected field: _agentId to be present" with neither) — the activedirectory
+  # `host`+`user`+`properties` requireds are likewise API-enforced. The binding is cross-level, so
+  # encoded in request.yml's jdbc branch (when jdbc.type is agent/activedirectory) rather than this
+  # per-config schema.
   # Per-type conditional requireds mirror the connection form — nested if/else-if (no allOf).
   if:
     properties:

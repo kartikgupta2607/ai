@@ -76,8 +76,6 @@ Router:
       type: object
       description: |
         Script configuration when routeRecordsUsing is "script".
-
-        The function should return the name of the branch to route to.
       properties:
         _scriptId:
           type: string
@@ -87,8 +85,18 @@ Router:
           examples: ["60a2c4e6f321d800129a1a3c"]
         function:
           type: string
-          description: Function name that returns the branch name
+          description: |-
+            Function in the script that picks the branch for the input. It receives the input as
+            `options.record` and returns the branch's zero-based position in `branches` as a
+            one-item array, such as `[0]`.
           examples: ["routeInput", "determineBranch"]
+          x-celigo-ai-guidance:
+            - |-
+              Return a branch position, never a branch name: a name, or a position with no branch,
+              fails the input with `branch_not_defined`; more than one position fails it with
+              `invalid_script_routing`; and an empty array fails it with
+              `record_not_routed_to_any_branch` ("Record did not match any branch routing criteria
+              during tool execution").
     branches:
       type: array
       description: |
@@ -126,10 +134,9 @@ Router:
 
               Uses Celigo's expression-based filter format. Send `version` and `rules`
               directly on `inputFilter` — not inside the `{type: "expression", expression: {...}}`
-              wrapper that export and import filters use. A wrapped filter is saved without an
-              error, but the branch is stored with no `inputFilter` and takes every input.
-            x-celigo-ai-guidance:
-              - Read the tool back after saving a branching router and check that each filtered branch still has its `inputFilter`; a filter sent in the export-filter wrapper is dropped on save without an error.
+              wrapper that export and import filters use. A wrapped filter (no top-level
+              `rules`, and a non-empty `expression` or `script` object) fails the save with 422
+              `invalid_router_branch_input_filter`, naming the branch's path.
             properties:
               version:
                 type: string
@@ -233,7 +240,12 @@ Router:
                     the same envelope (`{{data.0.name}}`,
                     `{{#if data.length}}found{{/if}}`; dot indexes only; a
                     string result); there is no `record` object in this
-                    context, so `{{record.…}}` renders nothing.
+                    context, so `{{record.…}}` renders nothing. Entries sent
+                    empty (`null`, `{}`) are dropped on save; a `fields` entry
+                    left with neither `extract` nor `generate`, or a `lists`
+                    entry with neither `generate` nor `fields` (a wrapped or
+                    misspelled value), fails the save with 422
+                    `invalid_field_value`.
                   properties:
                     fields:
                       type: array

@@ -6,6 +6,15 @@ SSL:
     cert and key together for mTLS, ca for a private CA, and passphrase only when the private
     key is encrypted; cert/key and ca can be combined.
   properties:
+    enabled:
+      type: boolean
+      description: |-
+        When true, a `jdbc` connection uses SSL/TLS (the connection form's **Use SSL**
+        checkbox). Written by `jdbc.useSSL`, which takes precedence over a value sent here, and
+        read directly when `jdbc.useSSL` is not a boolean, so a GET body sent back as a PUT keeps
+        the setting. `false` is stored only together with `cert`; otherwise it, like an omitted
+        value, clears the stored flag. Ignored on other connection types.
+      examples: [true]
     ca:
       type: string
       description: |-

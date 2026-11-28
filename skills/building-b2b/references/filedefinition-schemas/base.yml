@@ -23,15 +23,27 @@ FileDefinitionBase:
         "2": Updated file definition schema version with breaking changes.
       description: |
         Schema version of the file definition. Only incremented for breaking changes.
+      x-celigo-ai-guidance:
+        - |-
+          Send it on every create and every full replace: a body without it fails with 422
+          "File definition should have version field set." on delimited, fixed-width, X12 and
+          EDIFACT definitions alike. The server stores either value on every format; the
+          create examples send "1" for delimited and fixed-width definitions, and the X12
+          definitions in the list, read and replace examples carry "2".
       examples: ["1", "2"]
     format:
       type: string
       description: The file format this definition describes.
-      enum: [delimited, delimited/x12, delimited/edifact, fixed]
+      enum: [delimited, delimited/x12, delimited/edifact, delimited/tradacoms, fixed]
       x-enumDescriptions:
         delimited: Standard delimited files (CSV, TSV, etc.).
-        delimited/x12: EDI X12 format. Requires `globalId` when EDI license is enabled.
-        delimited/edifact: EDI EDIFACT format. Requires `globalId` when EDI license is enabled.
+        delimited/x12: EDI X12 format. Carries a `globalId`, assigned by the server when a create on an EDI-licensed account omits it.
+        delimited/edifact: EDI EDIFACT format. Carries a `globalId`, assigned by the server when a create on an EDI-licensed account omits it.
+        delimited/tradacoms: >-
+          EDI TRADACOMS format. Needs `version` "2" (otherwise 422
+          `tradacoms_fdr_version_not_supported` "TRADACOMS file definitions must use version
+          '2'.") and a `globalId` sent on create — none is assigned. Exports and imports that
+          use it need a `tradacoms` EDI profile in `_ediProfileId`.
         fixed: Fixed-width positional format.
     documentType:
       type: string
@@ -39,17 +51,41 @@ FileDefinitionBase:
       x-enumDescriptions:
         "997": X12 functional acknowledgement document type.
         CONTRL: EDIFACT functional acknowledgement document type.
-      description: EDI document type for acknowledgement documents.
+      description: |-
+        Marks the definition as an EDI acknowledgement document. A definition whose rules
+        generate a functional acknowledgement must carry it: the EDI Activity dashboard's
+        acknowledgement status reads it, and an X12 997 definition without it fails every
+        record of a live run of the import that generates the acknowledgement.
+      x-celigo-ai-guidance:
+        - |-
+          Set it on every definition that generates a functional acknowledgement (an X12 ST01 of
+          `997`, an EDIFACT UNH message type of `CONTRL`). When a 997 import fails every record
+          with `parsing_error` "Cannot set properties of undefined (setting 'Identifier code')"
+          labeled source `internal`, check this field first: the failure is the missing
+          documentType on an X12 997 definition, and setting it fixes the next run. The
+          generator preview and `POST /v1/processors/structuredFileGenerator` produce the file
+          either way — only a flow run shows the failure.
+        - |-
+          Rules grafted from a non-acknowledgement document's definition do not bring this field
+          along; Celigo's acknowledgement templates set it.
     globalId:
       type: string
-      description: |-
-        Entry in the platform's registry of standard EDI document definitions that this
-        definition is built from. On an EDI-licensed account an X12 or EDIFACT create without
-        it fails with 422 `global_id_not_provided`, and one naming an id the registry doesn't
-        have fails with 422 `invalid_global_id`. No public route lists the registry, so copy the
-        `globalId` of an existing definition for the same standard document. Immutable after
-        creation.
-      examples: ["Generic-4010-850-PurchaseOrder"]
+      description: |
+        Global identifier mapping to a known EDI standard document definition.
+
+        For `delimited/x12` and `delimited/edifact` on an account with an EDI
+        license, a create that omits it gets one assigned from the EDI catalog.
+        A `delimited/tradacoms` create gets none: without a `globalId` it fails
+        with 400 `global_id_not_provided`. A supplied value must be a catalog
+        entry on all three formats (an unknown one fails the create with 422
+        `invalid_global_id`). Immutable after creation: a PUT that sends a
+        different value, or none, keeps the stored id.
+      examples: ["3c7a8f2e-1234-5678-9abc-def012345678"]
+      x-celigo-ai-guidance:
+        - |-
+          Send the catalog globalId of the document when you know it. When it is omitted the
+          server picks the id, and a description naming another document type did not change
+          the pick — an X12 create described as an 856 got the same id as a bare X12 create.
     rules:
       type: array
       x-celigo-agent:
@@ -69,6 +105,10 @@ FileDefinitionBase:
         the parent file definition document. A save doesn't parse a sample,
         so a tree that saves can still fail or drop rows when parsed; test
         it against a sample with `POST /v1/processors/structuredFileParser`.
+        A definition an import generates a file with is tested the same
+        way with `POST /v1/processors/structuredFileGenerator`, which
+        reads the rules differently (see `Rule.maxOccurrence` and
+        `Element.referenceValue`).
       items:
         $ref: './rules.yml#/Rule'
     fixed:
@@ -102,30 +142,63 @@ FileDefinitionBase:
     delimited:
       type: object
       description: |
-        Configuration specific to delimited format files (CSV, EDI, etc.).
-
-        Used when `format` starts with "delimited".
+        Delimiters for every `format` that starts with "delimited" (CSV, X12, EDIFACT).
+        Generation always writes these saved values. A version "2" `delimited/x12` or
+        `delimited/edifact` parse instead reads the element separator, component separator
+        and segment terminator from the incoming envelope — the ISA segment for X12, the UNB
+        segment for EDIFACT — and uses them for that parse only, so one definition parses
+        interchanges from partners who use different delimiters. The stored definition is
+        not changed. Version "1" definitions and plain delimited files always parse with the
+        saved values; check either behavior against a sample with
+        `POST /v1/processors/structuredFileParser`.
+      x-celigo-ai-guidance:
+        - |-
+          Envelope delimiters are read only from an X12 ISA in its fixed 106-character form.
+          An interchange whose ISA is not padded to that length is parsed with the saved
+          delimiters, and when those do not produce an ISA segment either the parse fails
+          with 422 `delimiter_detect_failed` "Could not read delimiters from the EDI envelope,
+          and the file definition delimiters did not produce an ISA header." — fix the ISA
+          padding or save the partner's delimiters.
+        - |-
+          Detection needs `version: "2"`. A version "1" X12 definition saved with `*` that is
+          fed a `|`-separated interchange fails with 422 `missing_row` "Required rule must have
+          the respective row in the source file. Path: rules[0].required for line: 1".
       properties:
         rowSuffix:
           type: string
           description: |
-            Character(s) appended after each row during generation.
+            Segment terminator (X12 `~`, EDIFACT `'`) or other text the generator appends to
+            every row before `rowDelimiter`; rules with `skipRowSuffix: true` omit it. A
+            version "2" X12 or EDIFACT parse strips the terminator the envelope declares
+            instead of this value.
           examples: ["\\n", "\\r\\n"]
         rowDelimiter:
           type: string
           description: |
-            Character(s) used to delimit rows during parsing.
+            Splits the file into rows when parsing and is written after each row's
+            `rowSuffix` when generating. A version "2" X12 or EDIFACT parse splits on the
+            segment terminator the envelope declares (plus any line break that follows it),
+            so an interchange with no line breaks parses too; generation still writes this
+            value.
           examples: ["\\n", "~\\n"]
         colDelimiter:
           type: string
           description: |
-            Character(s) used to delimit columns/fields within a row.
+            Separates the elements of a row — `,` for CSV, `*` for X12, `+` for EDIFACT — when
+            parsing and generating. A version "2" X12 or EDIFACT parse uses the element
+            separator found in the incoming ISA (the character after `ISA`) or UNB segment
+            instead, so a partner's `|`-separated interchange parses against a definition
+            saved with `*`; generation always writes this value.
           examples: [",", "\\t", "*", "|"]
         compositeDelimiter:
           type: string
           description: |
-            Character(s) used to delimit composite elements within a field.
-            Primarily used in EDI formats.
+            Separates the sub-elements of a composite element (a rule element whose `value`
+            is an object) that does not set its own `delimiter` — `:` is usual for EDIFACT,
+            `>` or `:` for X12. A version "2" X12 or EDIFACT parse uses the component
+            separator the envelope declares (ISA16 for X12; the character after the syntax
+            identifier in UNB01 for EDIFACT), so composites split correctly whatever the
+            partner sends; generation joins sub-elements with this value.
           examples: [":", ">"]
     strict:
       type: boolean
@@ -145,8 +218,11 @@ FileDefinitionBase:
     escapeReleaseChar:
       type: boolean
       description: |
-        Whether to handle escape/release characters in delimited data.
-        Primarily relevant for EDI EDIFACT format.
+        When true, a `?` in front of a delimiter makes that character part of the value
+        instead of a separator (`PO?+W3B` parses as `PO+W3B`); it protects the separators a
+        version "2" EDIFACT parse reads from the envelope as well as the saved ones. When
+        false, `?` is ordinary text and the delimiter after it still splits the element. Set
+        it for EDIFACT partners who release characters in their data.
     skipEDIValidation:
       type: boolean
       default: true
@@ -171,12 +247,13 @@ FileDefinitionBase:
       EDI (X12 / EDIFACT) the root rule's `children` build the envelope → group → transaction →
       segment hierarchy.
     - |-
-      Rows repeat only under an elements-less `container: true` rule (a group `name`,
+      On parse, rows repeat only under an elements-less `container: true` rule (a group `name`,
       `maxOccurrence` above 1, no `elements`) whose child rule carries the row's elements. A
       row-marker rule with no such container above it, or under a container whose
       `maxOccurrence` is 1 or unset, matches only the first row: in fixed-width and delimited
       files the parser drops the rest without an error, and an X12 parse fails at the next row,
-      naming a mandatory segment as missing.
+      naming a mandatory segment as missing. A definition an import generates a file with
+      repeats a rule from that rule's own `maxOccurrence` instead (see `Rule.maxOccurrence`).
     - |-
       Cloning an export that uses a file definition also creates a new file definition, with the
       same name, and points the cloned export at it: the export's clone preview lists it as a

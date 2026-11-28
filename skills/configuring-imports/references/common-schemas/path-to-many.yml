@@ -1,11 +1,13 @@
 PathToMany:
   type: string
   description: |
-    Path to the array of child records inside an object record when `oneToMany` is true, in dot
-    notation (`items`, `lines.lineItems`). Leave blank when the incoming record is itself an array
-    (grouped or row-based data) — each element is then a child record. A path that does not resolve
-    to an array processes zero records and reports success. Read only on steps that receive a
-    record (imports, lookup exports); on a standalone export it is saved and ignored — see `oneToMany`.
+    Path to the array of child records when `oneToMany` is true, in dot notation (`items`,
+    `lines.lineItems`). Leave blank when the incoming record is itself an array (grouped or
+    row-based data) and each element is a child record; when an array record's children sit under
+    one element's field, start the path with that element's index (`0.items`). A path that does not
+    resolve to an array processes zero records and reports success. Read only on steps that receive
+    a record (imports, lookup exports); on a standalone export it is saved and ignored — see
+    `oneToMany`.
   x-celigo-ai-guidance:
     - |-
       Inert on a standalone export (a flow's page generator) exactly like ``oneToMany`` — the value
@@ -13,17 +15,28 @@ PathToMany:
       (live-verified 2026-09-18). Splitting a standalone export's records into one per element is
       ``hooks.preSavePage`` work, or the file definition's record boundary; never this field.
     - |-
-      Set this ONLY when the record entering the step is an object whose children sit under a field.
-      On an array record (a ``groupByFields`` export, a CSV/file group, a script returning an array)
-      any path resolves to nothing: the step processes ZERO children, builds no request, and reports
-      success with no error. Live-verified 2026-09-10 — the failure is silent, so confirm the arriving
-      record's shape (test run stage data, or the flow builder's input panel: ``rows`` means array).
+      Start the path with a field name ONLY when the record entering the step is an object whose
+      children sit under that field. On an array record (a ``groupByFields`` export, a CSV/file
+      group, a script returning an array) a path that starts with a field name resolves to nothing:
+      the step processes ZERO children, builds no request, and reports success with no error.
+      Live-verified 2026-09-10 — the failure is silent, so confirm the arriving record's shape (test
+      run stage data, or the flow builder's input panel: ``rows`` means array).
+    - |-
+      On an array record only a path that starts with an element index resolves:
+      ``0.finalFulfillmentData`` fans out the array under element 0's ``finalFulfillmentData``
+      field. An index past the last element fans out zero children with the same silent success.
+      Live-verified 2026-10-26 in import previews and real flow runs fed by a ``groupByFields``
+      export.
     - |-
       Blank with an object record is the ``oneToMany_error`` failure ("Record at index 0 was not an
       array, and no PathToMany was provided"); blank with an array record is the correct row-based
       configuration. An empty string behaves exactly like an absent field.
     - |-
-      Use the bare field name or dotted path (``lineItems``, ``details.items``), not a JSONPath
-      expression. Each child in path mode carries ``_PARENT`` (the parent minus the array), so
-      parent-level fields are read as ``{{record._PARENT.<field>}}``.
+      Use the bare field name or dotted path (``lineItems``, ``details.items``, or ``0.items`` on an
+      array record), not a JSONPath expression. Each child in path mode carries ``_PARENT`` (the
+      parent minus the array), so an object child reads parent-level fields as
+      ``{{record._PARENT.<field>}}``. Under an index path the parent is the array record itself,
+      minus only the fanned field: ``{{record._PARENT.0.<field>}}``, with its other elements at
+      ``_PARENT.1``, ``_PARENT.2``, and so on. A child that is itself an array binds as ``rows``
+      instead — see ``oneToMany`` for where its ``_PARENT`` can be read.
   examples: ["items", "line_items", "orderLines", "lines.lineItems"]

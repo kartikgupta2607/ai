@@ -65,8 +65,16 @@ Router:
           examples: ["60a2c4e6f321d800129a1a3c"]
         function:
           type: string
-          description: Function name that returns the branch name.
+          description: |-
+            Function in the script that picks the branch for the request. It receives the
+            record being routed as `options.record` and returns the branch's zero-based position
+            in `branches` as a one-item array, such as `[0]`.
           examples: ["routeRequest", "determineBranch"]
+          x-celigo-ai-guidance:
+            - |-
+              Return a branch position, never a branch name: a name, or a position with no branch,
+              fails the request with `branch_not_defined`, and more than one position fails it
+              with `invalid_script_routing`.
     branches:
       type: array
       description: Processing branches, evaluated in order.
@@ -82,10 +90,9 @@ Router:
             description: |-
               Filter criteria for branch selection. Send `version` and `rules` directly on
               `inputFilter` — not inside the `{type: "expression", expression: {...}}` wrapper
-              that export and import filters use. A wrapped filter is saved without an error,
-              but the branch is stored with no `inputFilter` and takes every request.
-            x-celigo-ai-guidance:
-              - Read the API back after saving a branching router and check that each filtered branch still has its `inputFilter`; a filter sent in the export-filter wrapper is dropped on save without an error.
+              that export and import filters use. A wrapped filter (no top-level `rules`, and a
+              non-empty `expression` or `script` object) fails the save with 422
+              `invalid_router_branch_input_filter`, naming the branch's path.
             properties:
               version:
                 type: string

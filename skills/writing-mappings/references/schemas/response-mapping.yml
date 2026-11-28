@@ -7,6 +7,12 @@ ResponseMapping:
     step's response is discarded after the call.
 
     `fields` and `lists` are plain arrays — exactly the shape GET returns.
+    Entries sent empty (`null`, `{}`, or every value `null`) are dropped on
+    save. Any other `fields` entry left with neither `extract` nor
+    `generate`, or `lists` entry with neither `generate` nor `fields` —
+    what is left of a wrapped or misspelled value such as
+    `"fields": {"type": [...]}` — fails the save with 422
+    `invalid_field_value`.
 
     Extract paths do NOT read the raw application response — the platform
     wraps every response in a canonical per-record envelope first, and
@@ -23,6 +29,14 @@ ResponseMapping:
       results returns each group as an array inside `data`
       (`"data": [[<row>, <row>]]`): `data[0][0].name` (or `data.0.0.name`)
       reads the first row of the first group, and `data[0]` copies the group.
+      A page-processor preview (`previewPageProcessor`) fills `data` with
+      the lookup's first record only when the lookup's document in the
+      request carries no `test.limit`, and with up to `test.limit` records
+      when it does — except for a lookup upstream of the previewed step
+      whose document carries `mockOutput`, where `data` holds that mock's
+      first record whatever the limit. A test run fills it with every
+      record the lookup returns, up to `test.limit` on a `type: test`
+      lookup.
     - **Import steps**: `{"id": "<destination record id>", "statusCode": 200,
       "ignored": false, "errors": [], "_json": <raw destination response>,
       ...<response body fields flattened at the root>}` — use `id` for the
@@ -34,7 +48,16 @@ ResponseMapping:
       `{"id": "1234567890", "mockResponse": "replace me"}` (numbered
       `1234567890-1`, `1234567890-2`, … when a page holds several records)
       — an `extract: "id"` in a test run merges that mock id, never a
-      destination record id.
+      destination record id. A step that calls a Tool (`ToolImport`) is the
+      exception: a test run runs the Tool, and the envelope is the Tool's
+      output — under `_json` and again at the root, with no `id`,
+      `statusCode`, `errors` or `ignored` — not the step's `mockResponse`.
+      Only a page-processor preview (`previewPageProcessor`) of a later
+      step reads that `mockResponse`, as saved and without copying its
+      `_json` fields to the root: over a mock that holds the Tool's output
+      under `_json` alone, `_json.<path>` finds its value and a root
+      `<path>` finds nothing. Write a `ToolImport` step's extracts as
+      `_json.<path>`, which both read (live, 2026-11-27).
 
     An `extract` may also be a Handlebars expression. It evaluates against
     the same envelope as a plain path, so every path inside `{{ }}` starts
@@ -63,10 +86,10 @@ ResponseMapping:
       runs on top of it in a test run).
     - |-
       Send `fields` and `lists` as bare arrays, exactly as GET returns them.
-      Never wrap either in an object (e.g. `"fields": {"type": [...]}`): the
-      API does not reject that shape — it returns 200 and silently persists
-      `fields: [null]` / `lists: [{"fields": []}]`, erasing the step's
-      response mappings.
+      A wrapped value (e.g. `"fields": {"type": [...]}`), an empty object
+      (`"fields": {}`), or an entry holding only unknown keys fails the save
+      with 422 `invalid_field_value`, and the error's `field` names the array
+      (e.g. `pageProcessors[0].responseMapping.fields`).
     - |-
       responseMapping is fully replaced on PUT: omitting it resets the step
       to empty `{"fields": [], "lists": []}`. Always send the complete
@@ -75,7 +98,13 @@ ResponseMapping:
       To carry several lookup results onto the record, use `extract: "data"`
       (the whole result array) or a `lists` entry whose extracts use
       `data[*].x` — never `data[*].x` in `fields[].extract`, which merges
-      nothing: the record simply never gains the field.
+      nothing: the record simply never gains the field. Either way a
+      page-processor preview shows one result in that array when the
+      lookup's document carries no `test.limit` and up to `test.limit`
+      results when it does (an upstream lookup whose document carries
+      `mockOutput` shows that mock's first result whatever the limit) — so
+      check the full list in a test run, which a `type: test` lookup caps
+      at `test.limit` too.
   examples:
     - fields:
         - extract: "id"

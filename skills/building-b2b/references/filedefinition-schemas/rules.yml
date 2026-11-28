@@ -19,8 +19,9 @@ Rule:
     - **Container rule** — sets `container: true`.  A loop wrapper
       that produces no row of its own: a group `name`, a
       `maxOccurrence` above `1` and no `elements`, with the repeated
-      row's rule under `children`.  It is the only shape that repeats
-      rows (see `container`).
+      row's rule under `children`.  On parse it is the only shape
+      that repeats rows (see `container`); generation repeats a rule
+      from its own `maxOccurrence` (see `maxOccurrence`).
 
     **Envelopes and `closeRule`**
 
@@ -31,8 +32,8 @@ Rule:
     - The matching trailer lives on the opening rule's `closeRule`.
 
     `closeRule` accepts both an object (single trailer rule) and a
-    one-element array of trailer rules; the parser treats them
-    equivalently.  In practice the **root** envelope (e.g. IEA / UNZ)
+    one-element array of trailer rules; the parser and the generator
+    treat them equivalently.  In practice the **root** envelope (e.g. IEA / UNZ)
     is written as an object, and **inner** envelopes (e.g. GE / SE /
     UNE) are written as a one-element array — both shapes are valid
     against this schema.
@@ -86,14 +87,16 @@ Rule:
         - A one-element array of `Rule` objects (typical for inner
           envelopes, e.g. GE / SE / UNE).
 
-        Both shapes are accepted by the parser; tooling that
-        round-trips file definitions should preserve whichever shape
-        the source document uses.
+        Both shapes are accepted by the parser and the generator, with
+        the same result; tooling that round-trips file definitions
+        should preserve whichever shape the source document uses.
 
         Put it on the rule that opens the envelope (ISA, GS, ST, UNB,
         UNH), never on a `container` wrapper.  A container's close rule
         saves and parses without an error, but it consumes the row it
         names, so the rule meant to read that row comes back empty.
+        Generation writes a close rule after the children of the rule
+        that carries it, a `container` wrapper included.
 
         For non-EDI / non-loop rules `closeRule` is omitted.
       oneOf:
@@ -107,8 +110,8 @@ Rule:
       type: boolean
       description: |
         Marks this rule as a pure loop wrapper that does not emit a
-        row of its own, and is the only way rows repeat: give the
-        wrapper a group `name`, a `maxOccurrence` above `1` and no
+        row of its own, and on parse is the only way rows repeat: give
+        the wrapper a group `name`, a `maxOccurrence` above `1` and no
         `elements`, and put the repeated row's rule under its
         `children` (for EDI, the `ST` or `UNH` rule with its elements,
         children and `closeRule`).  Parsed rows come back as an array
@@ -124,6 +127,9 @@ Rule:
         "SE" is missing on line: 6`).  A rule outside any container
         matches one row the same way.  Give the wrapper the most rows
         the file can hold, such as `1000`.
+
+        On generation a rule repeats from its own `maxOccurrence`,
+        whether or not it is a `container` (see `maxOccurrence`).
       default: false
       examples: [true, false]
     maxOccurrence:
@@ -131,7 +137,7 @@ Rule:
       minimum: 1
       description: |
         Upper bound on how many times this rule may repeat at its
-        current position.  Rows repeat only under a `container`
+        current position.  On parse rows repeat only under a `container`
         wrapper, so larger values such as `1000` go on the wrapper of
         an `ST` transaction set or a line-item loop; EDI envelopes use
         `1` (one ISA per file, one GS per group).
@@ -142,6 +148,15 @@ Rule:
         segment "<name>" is applicable only if it is a
         container/loop.`  `0` is refused on save and on parse (`if
         present, maxOccurrence must be greater than or equal to 1`).
+
+        Generation reads it on the rule itself: a child rule is written
+        once per item of the array at its `relativeDataPath` only when
+        its `maxOccurrence` is above `1`, whether or not it is a
+        `container`.  With `1`, or without the key, the row is built
+        once and elements that take their values from the array's
+        items come out empty, without an error; a row left with no
+        value after its first element is then written empty or left
+        out, as any such row is (see `required`).
       examples: [1, 1000]
     required:
       type: boolean
@@ -150,6 +165,18 @@ Rule:
         true and the rule does not match, the parser raises a
         validation error.  EDI envelope segments (ISA/GS/ST) are
         always required; optional summary segments are not.
+
+        Generation reads it differently.  `false` leaves the rule's row
+        out, without an error, whenever no element after its first
+        produces a value.  `true` doesn't force a row: where the
+        generator leaves such a row out anyway (`delimited/x12` and
+        `delimited/edifact` definitions with `version` `2`, and those
+        two and `delimited` with `skipEDIValidation: false`), a required
+        rule is left out the same way.  With `skipEDIValidation: false`,
+        in every format but `fixed`, `true` does make the rule's
+        `required` elements mandatory (see `Element.required`).  A rule
+        without the key writes its rows as with `true`, and its
+        `required` elements aren't enforced.
       examples: [true, false]
     skipRowSuffix:
       type: boolean
@@ -230,7 +257,11 @@ Element:
       definitions whose value comes from the trading-partner profile
       use `referenceValue` to bind a Handlebars template such as
       `{{{ediProfile.isa01}}}` — the runtime fills the value from
-      the profile at parse / generate time.
+      the profile at parse time.
+    - **Generation** — a definition an import generates a file with
+      writes each element's `value`: literal text, or a Handlebars
+      template filled from the record or the EDI profile.  It doesn't
+      read `referenceValue`.
 
     **Required fields**
 
@@ -240,7 +271,9 @@ Element:
     columns use `name` only and are read by position.  When
     `value` is set it must be non-empty — the parser uses it as a
     literal match requirement (`ISA01`, `BEG03`, or the marker
-    string).
+    string).  Generation needs a `value` on every element: one
+    without it fails with `INVALID_FILE_DEFINITION` (`Every element
+    must provide a text or numerical "value" property.`).
   required:
     - name
   properties:
@@ -276,6 +309,12 @@ Element:
           e.g. EDIFACT `UNH02` = `S009` or X12 composites split by
           the component separator) set `value` to an object with a
           `delimiter` and nested `elements`.  See `CompositeValue`.
+
+        In a definition that generates a file, a string `value` is the
+        text written for the element: literal text, or a Handlebars
+        template filled from the record or the EDI profile
+        (`{{{[Purchase Order Number]}}}`,
+        `{{{ediProfile.controlNumber}}}`).
       oneOf:
         - title: literal
           type: string
@@ -308,7 +347,11 @@ Element:
         Whether the parser should fail when this element is missing
         or blank.  Defaults to false.  EDI envelope qualifiers and
         transaction header fields (ISA/GS/ST elements) are
-        conventionally marked required.
+        conventionally marked required.  Generation enforces it only
+        on a rule that is itself `required: true`, in a definition
+        with `skipEDIValidation: false` and a `format` other than
+        `fixed`: an empty value fails with `mandatory_element_absent`.
+        Anywhere else an empty value isn't an error.
       examples: [true, false]
     minLength:
       type: integer
@@ -338,9 +381,10 @@ Element:
         those elements.  Without it, a blank `isa02` comes out empty
         and an unpadded interchange id short, and Celigo's own parser
         refuses that ISA (`Mandatory element "ISA02" is not present`,
-        `Min. length not met for the field "ISA06"`).  A value longer
-        than `maxLength` fails the generation (`Max. length not met
-        for the field "<name>"`).
+        `Min. length not met for the field "ISA06"`).  With
+        `skipEDIValidation: false`, in every format but `fixed`, a value
+        longer than `maxLength` fails the generation (`Max. length not
+        met for the field "<name>"`); otherwise it is written as it is.
     referenceValue:
       type: string
       description: |
@@ -348,7 +392,10 @@ Element:
         runtime instead of being read from the file.  Most common use
         is binding EDI envelope fields to the trading-partner
         profile, e.g. `{{{ediProfile.isa01}}}` or
-        `{{{ediProfile.tpInterchangeId}}}`.
+        `{{{ediProfile.tpInterchangeId}}}`.  Generation doesn't read
+        it: a definition that generates a file carries the template
+        in `value`, and an element with both is written as its
+        `value`.
 
         The linked EDI profile's fields resolve under
         `ediProfile.*`.  X12 profiles: `isa01`, `isa02`, `isa03`,

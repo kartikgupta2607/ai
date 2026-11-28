@@ -28,8 +28,9 @@ Prompt:
         Server-generated identifier for the prompt — the grant handle
         referenced as `prompt:<_id>` in end-user, group, and role resource
         grants and in `permissionSets[]._promptIds` (older grants written as
-        `tool:<_id>` still validate but are not reported by effective
-        access). Identity is preserved across updates by matching on `name`,
+        `tool:<_id>` still validate, but they are not reported by effective
+        access and do not open the prompt for end-users on the MCP
+        endpoint). Identity is preserved across updates by matching on `name`,
         so renaming a prompt assigns a new `_id` and breaks grants that
         reference the old one.
       examples: ["6b2c3d4e5f6a7b8c9d0e1f2a"]
@@ -100,9 +101,8 @@ Prompt:
         `prompts/list` and not fetchable via `prompts/get`. A prompt sent
         without `disabled` is saved enabled, unlike tool, API and resource
         entries, which default to disabled; send `true` to keep a new prompt
-        hidden. An enabled prompt also satisfies the server-level enablement
-        rule on its own. Prompts saved before this field existed are reported
-        as `disabled: false`.
+        hidden. Prompts saved before this field existed are reported as
+        `disabled: false`.
       examples: [false, true]
   required:
     - name
